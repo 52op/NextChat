@@ -96,6 +96,15 @@ declare global {
       DEFAULT_INPUT_TEMPLATE?: string;
 
       ENABLE_MCP?: string; // enable mcp functionality
+
+      // server side sync config (single user / private deployment)
+      SYNC_PROVIDER?: string; // "webdav" | "upstash", empty to disable
+      WEBDAV_ENDPOINT?: string;
+      WEBDAV_USERNAME?: string;
+      WEBDAV_PASSWORD?: string;
+      UPSTASH_ENDPOINT?: string;
+      UPSTASH_USERNAME?: string;
+      UPSTASH_API_KEY?: string;
     }
   }
 }
@@ -176,9 +185,35 @@ export const getServerSideConfig = () => {
   //   `[Server Config] using ${randomIndex + 1} of ${apiKeys.length} api key`,
   // );
 
+  const syncProvider = (process.env.SYNC_PROVIDER ?? "").trim().toLowerCase();
+  const isServerSync = syncProvider === "webdav" || syncProvider === "upstash";
+
+  // server side sync credentials, only used on the server to proxy requests
+  const serverSync = {
+    provider: isServerSync ? (syncProvider as "webdav" | "upstash") : "",
+    webdav: {
+      endpoint: process.env.WEBDAV_ENDPOINT ?? "",
+      username: process.env.WEBDAV_USERNAME ?? "",
+      password: process.env.WEBDAV_PASSWORD ?? "",
+    },
+    upstash: {
+      endpoint: process.env.UPSTASH_ENDPOINT ?? "",
+      username: process.env.UPSTASH_USERNAME ?? "",
+      apiKey: process.env.UPSTASH_API_KEY ?? "",
+    },
+  };
+
   const allowedWebDavEndpoints = (
     process.env.WHITE_WEBDAV_ENDPOINTS ?? ""
   ).split(",");
+
+  // automatically whitelist the server side webdav endpoint
+  if (
+    serverSync.provider === "webdav" &&
+    serverSync.webdav.endpoint.trim().length > 0
+  ) {
+    allowedWebDavEndpoints.push(serverSync.webdav.endpoint.trim());
+  }
 
   return {
     baseUrl: process.env.BASE_URL,
@@ -274,5 +309,6 @@ export const getServerSideConfig = () => {
     visionModels,
     allowedWebDavEndpoints,
     enableMcp: process.env.ENABLE_MCP === "true",
+    serverSync,
   };
 };

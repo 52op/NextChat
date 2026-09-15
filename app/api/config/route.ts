@@ -15,6 +15,8 @@ const DANGER_CONFIG = {
   customModels: serverConfig.customModels,
   defaultModel: serverConfig.defaultModel,
   visionModels: serverConfig.visionModels,
+  // only tell the client which provider is managed by the server, never the credentials
+  serverSyncProvider: serverConfig.serverSync.provider,
 };
 
 declare global {

@@ -1,18 +1,24 @@
-import { STORAGE_KEY } from "@/app/constant";
+import { ACCESS_CODE_PREFIX, STORAGE_KEY } from "@/app/constant";
 import { SyncStore } from "@/app/store/sync";
 import { chunks } from "../format";
+import { SyncClientOptions } from ".";
 
 export type UpstashConfig = SyncStore["upstash"];
 export type UpStashClient = ReturnType<typeof createUpstashClient>;
 
-export function createUpstashClient(store: SyncStore) {
+export function createUpstashClient(
+  store: SyncStore,
+  options: SyncClientOptions,
+) {
   const config = store.upstash;
   const storeKey = config.username.length === 0 ? STORAGE_KEY : config.username;
   const chunkCountKey = `${storeKey}-chunk-count`;
   const chunkIndexKey = (i: number) => `${storeKey}-chunk-${i}`;
 
   const proxyUrl =
-    store.useProxy && store.proxyUrl.length > 0 ? store.proxyUrl : undefined;
+    options.useProxy && options.proxyUrl.length > 0
+      ? options.proxyUrl
+      : undefined;
 
   return {
     async check() {
@@ -76,6 +82,14 @@ export function createUpstashClient(store: SyncStore) {
     },
 
     headers() {
+      // when the sync is managed by the server, the server holds the upstash
+      // token. we only send the access code so the proxy can authorize us.
+      if (options.serverManaged) {
+        return {
+          Authorization: `Bearer ${ACCESS_CODE_PREFIX}${options.accessCode}`,
+        };
+      }
+
       return {
         Authorization: `Bearer ${config.apiKey}`,
       };
@@ -98,10 +112,15 @@ export function createUpstashClient(store: SyncStore) {
       try {
         let u = new URL(proxyUrl + pathPrefix + path);
         // add query params
-        u.searchParams.append("endpoint", config.endpoint);
+        if (!options.serverManaged) {
+          u.searchParams.append("endpoint", config.endpoint);
+        }
         url = u.toString();
       } catch (e) {
-        url = pathPrefix + path + "?endpoint=" + config.endpoint;
+        url = pathPrefix + path;
+        if (!options.serverManaged) {
+          url += "?endpoint=" + config.endpoint;
+        }
       }
 
       return url;

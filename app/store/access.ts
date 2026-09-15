@@ -148,6 +148,7 @@ const DEFAULT_ACCESS_STATE = {
   customModels: "",
   defaultModel: "",
   visionModels: "",
+  serverSyncProvider: "",
 
   // tts config
   edgeTTSVoiceName: "zh-CN-YunxiNeural",
@@ -162,6 +163,10 @@ export const useAccessStore = createPersistStore(
 
       return get().needCode;
     },
+    configLoaded() {
+      return fetchState >= 2;
+    },
+
     getVisionModels() {
       this.fetch();
       return get().visionModels;

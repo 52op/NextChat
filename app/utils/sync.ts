@@ -128,6 +128,22 @@ export function getLocalAppState() {
   return appState;
 }
 
+/**
+ * Check whether all stores involved in app state sync have been hydrated
+ * from the persistent storage. Importing app state before hydration could
+ * accidentally upload an empty local state.
+ */
+export function isAppStateHydrated() {
+  const stores = [
+    useChatStore,
+    useAccessStore,
+    useAppConfig,
+    useMaskStore,
+    usePromptStore,
+  ];
+  return stores.every((store: any) => !!store.getState()._hasHydrated);
+}
+
 export function setLocalAppState(appState: AppState) {
   Object.entries(LocalStateSetters).forEach(([key, setter]) => {
     setter(appState[key as keyof AppState]);

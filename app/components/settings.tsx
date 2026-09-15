@@ -327,6 +327,9 @@ function CheckButton() {
 
 function SyncConfigModal(props: { onClose?: () => void }) {
   const syncStore = useSyncStore();
+  const accessStore = useAccessStore();
+  const serverSyncProvider = accessStore.serverSyncProvider;
+  const serverManaged = !!serverSyncProvider;
 
   return (
     <div className="modal-mask">
@@ -344,142 +347,162 @@ function SyncConfigModal(props: { onClose?: () => void }) {
           />,
         ]}
       >
-        <List>
-          <ListItem
-            title={Locale.Settings.Sync.Config.SyncType.Title}
-            subTitle={Locale.Settings.Sync.Config.SyncType.SubTitle}
-          >
-            <select
-              value={syncStore.provider}
-              onChange={(e) => {
-                syncStore.update(
-                  (config) =>
-                    (config.provider = e.target.value as ProviderType),
-                );
-              }}
-            >
-              {Object.entries(ProviderType).map(([k, v]) => (
-                <option value={v} key={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
-          </ListItem>
-
-          <ListItem
-            title={Locale.Settings.Sync.Config.Proxy.Title}
-            subTitle={Locale.Settings.Sync.Config.Proxy.SubTitle}
-          >
-            <input
-              type="checkbox"
-              checked={syncStore.useProxy}
-              onChange={(e) => {
-                syncStore.update(
-                  (config) => (config.useProxy = e.currentTarget.checked),
-                );
-              }}
-            ></input>
-          </ListItem>
-          {syncStore.useProxy ? (
+        {serverManaged ? (
+          <List>
             <ListItem
-              title={Locale.Settings.Sync.Config.ProxyUrl.Title}
-              subTitle={Locale.Settings.Sync.Config.ProxyUrl.SubTitle}
+              title={Locale.Settings.Sync.Config.SyncType.Title}
+              subTitle={Locale.Settings.Sync.Config.SyncType.SubTitle}
             >
-              <input
-                type="text"
-                value={syncStore.proxyUrl}
-                onChange={(e) => {
-                  syncStore.update(
-                    (config) => (config.proxyUrl = e.currentTarget.value),
-                  );
-                }}
-              ></input>
+              <span>{serverSyncProvider.toUpperCase()}</span>
             </ListItem>
-          ) : null}
-        </List>
-
-        {syncStore.provider === ProviderType.WebDAV && (
+          </List>
+        ) : (
           <>
             <List>
-              <ListItem title={Locale.Settings.Sync.Config.WebDav.Endpoint}>
-                <input
-                  type="text"
-                  value={syncStore.webdav.endpoint}
+              <ListItem
+                title={Locale.Settings.Sync.Config.SyncType.Title}
+                subTitle={Locale.Settings.Sync.Config.SyncType.SubTitle}
+              >
+                <select
+                  value={syncStore.provider}
                   onChange={(e) => {
                     syncStore.update(
                       (config) =>
-                        (config.webdav.endpoint = e.currentTarget.value),
+                        (config.provider = e.target.value as ProviderType),
                     );
                   }}
-                ></input>
-              </ListItem>
-
-              <ListItem title={Locale.Settings.Sync.Config.WebDav.UserName}>
-                <input
-                  type="text"
-                  value={syncStore.webdav.username}
-                  onChange={(e) => {
-                    syncStore.update(
-                      (config) =>
-                        (config.webdav.username = e.currentTarget.value),
-                    );
-                  }}
-                ></input>
-              </ListItem>
-              <ListItem title={Locale.Settings.Sync.Config.WebDav.Password}>
-                <PasswordInput
-                  value={syncStore.webdav.password}
-                  onChange={(e) => {
-                    syncStore.update(
-                      (config) =>
-                        (config.webdav.password = e.currentTarget.value),
-                    );
-                  }}
-                ></PasswordInput>
+                >
+                  {Object.entries(ProviderType).map(([k, v]) => (
+                    <option value={v} key={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
               </ListItem>
             </List>
           </>
         )}
 
-        {syncStore.provider === ProviderType.UpStash && (
-          <List>
-            <ListItem title={Locale.Settings.Sync.Config.UpStash.Endpoint}>
-              <input
-                type="text"
-                value={syncStore.upstash.endpoint}
-                onChange={(e) => {
-                  syncStore.update(
-                    (config) =>
-                      (config.upstash.endpoint = e.currentTarget.value),
-                  );
-                }}
-              ></input>
-            </ListItem>
+        {!serverManaged && (
+          <>
+            <List>
+              <ListItem
+                title={Locale.Settings.Sync.Config.Proxy.Title}
+                subTitle={Locale.Settings.Sync.Config.Proxy.SubTitle}
+              >
+                <input
+                  type="checkbox"
+                  checked={syncStore.useProxy}
+                  onChange={(e) => {
+                    syncStore.update(
+                      (config) => (config.useProxy = e.currentTarget.checked),
+                    );
+                  }}
+                ></input>
+              </ListItem>
+              {syncStore.useProxy ? (
+                <ListItem
+                  title={Locale.Settings.Sync.Config.ProxyUrl.Title}
+                  subTitle={Locale.Settings.Sync.Config.ProxyUrl.SubTitle}
+                >
+                  <input
+                    type="text"
+                    value={syncStore.proxyUrl}
+                    onChange={(e) => {
+                      syncStore.update(
+                        (config) => (config.proxyUrl = e.currentTarget.value),
+                      );
+                    }}
+                  ></input>
+                </ListItem>
+              ) : null}
+            </List>
 
-            <ListItem title={Locale.Settings.Sync.Config.UpStash.UserName}>
-              <input
-                type="text"
-                value={syncStore.upstash.username}
-                placeholder={STORAGE_KEY}
-                onChange={(e) => {
-                  syncStore.update(
-                    (config) =>
-                      (config.upstash.username = e.currentTarget.value),
-                  );
-                }}
-              ></input>
-            </ListItem>
-            <ListItem title={Locale.Settings.Sync.Config.UpStash.Password}>
-              <PasswordInput
-                value={syncStore.upstash.apiKey}
-                onChange={(e) => {
-                  syncStore.update(
-                    (config) => (config.upstash.apiKey = e.currentTarget.value),
-                  );
-                }}
-              ></PasswordInput>
-            </ListItem>
-          </List>
+            {syncStore.provider === ProviderType.WebDAV && (
+              <>
+                <List>
+                  <ListItem title={Locale.Settings.Sync.Config.WebDav.Endpoint}>
+                    <input
+                      type="text"
+                      value={syncStore.webdav.endpoint}
+                      onChange={(e) => {
+                        syncStore.update(
+                          (config) =>
+                            (config.webdav.endpoint = e.currentTarget.value),
+                        );
+                      }}
+                    ></input>
+                  </ListItem>
+
+                  <ListItem title={Locale.Settings.Sync.Config.WebDav.UserName}>
+                    <input
+                      type="text"
+                      value={syncStore.webdav.username}
+                      onChange={(e) => {
+                        syncStore.update(
+                          (config) =>
+                            (config.webdav.username = e.currentTarget.value),
+                        );
+                      }}
+                    ></input>
+                  </ListItem>
+                  <ListItem title={Locale.Settings.Sync.Config.WebDav.Password}>
+                    <PasswordInput
+                      value={syncStore.webdav.password}
+                      onChange={(e) => {
+                        syncStore.update(
+                          (config) =>
+                            (config.webdav.password = e.currentTarget.value),
+                        );
+                      }}
+                    ></PasswordInput>
+                  </ListItem>
+                </List>
+              </>
+            )}
+
+            {syncStore.provider === ProviderType.UpStash && (
+              <List>
+                <ListItem title={Locale.Settings.Sync.Config.UpStash.Endpoint}>
+                  <input
+                    type="text"
+                    value={syncStore.upstash.endpoint}
+                    onChange={(e) => {
+                      syncStore.update(
+                        (config) =>
+                          (config.upstash.endpoint = e.currentTarget.value),
+                      );
+                    }}
+                  ></input>
+                </ListItem>
+
+                <ListItem title={Locale.Settings.Sync.Config.UpStash.UserName}>
+                  <input
+                    type="text"
+                    value={syncStore.upstash.username}
+                    placeholder={STORAGE_KEY}
+                    onChange={(e) => {
+                      syncStore.update(
+                        (config) =>
+                          (config.upstash.username = e.currentTarget.value),
+                      );
+                    }}
+                  ></input>
+                </ListItem>
+                <ListItem title={Locale.Settings.Sync.Config.UpStash.Password}>
+                  <PasswordInput
+                    value={syncStore.upstash.apiKey}
+                    onChange={(e) => {
+                      syncStore.update(
+                        (config) =>
+                          (config.upstash.apiKey = e.currentTarget.value),
+                      );
+                    }}
+                  ></PasswordInput>
+                </ListItem>
+              </List>
+            )}
+          </>
         )}
       </Modal>
     </div>
@@ -1459,44 +1482,44 @@ export function Settings() {
     </>
   );
 
-  const ai302ConfigComponent = accessStore.provider === ServiceProvider["302.AI"] && (
+  const ai302ConfigComponent = accessStore.provider ===
+    ServiceProvider["302.AI"] && (
     <>
       <ListItem
-          title={Locale.Settings.Access.AI302.Endpoint.Title}
-          subTitle={
-            Locale.Settings.Access.AI302.Endpoint.SubTitle +
-            AI302.ExampleEndpoint
+        title={Locale.Settings.Access.AI302.Endpoint.Title}
+        subTitle={
+          Locale.Settings.Access.AI302.Endpoint.SubTitle + AI302.ExampleEndpoint
+        }
+      >
+        <input
+          aria-label={Locale.Settings.Access.AI302.Endpoint.Title}
+          type="text"
+          value={accessStore.ai302Url}
+          placeholder={AI302.ExampleEndpoint}
+          onChange={(e) =>
+            accessStore.update(
+              (access) => (access.ai302Url = e.currentTarget.value),
+            )
           }
-        >
-          <input
-            aria-label={Locale.Settings.Access.AI302.Endpoint.Title}
-            type="text"
-            value={accessStore.ai302Url}
-            placeholder={AI302.ExampleEndpoint}
-            onChange={(e) =>
-              accessStore.update(
-                (access) => (access.ai302Url = e.currentTarget.value),
-              )
-            }
-          ></input>
-        </ListItem>
-        <ListItem
-          title={Locale.Settings.Access.AI302.ApiKey.Title}
-          subTitle={Locale.Settings.Access.AI302.ApiKey.SubTitle}
-        >
-          <PasswordInput
-            aria-label={Locale.Settings.Access.AI302.ApiKey.Title}
-            value={accessStore.ai302ApiKey}
-            type="text"
-            placeholder={Locale.Settings.Access.AI302.ApiKey.Placeholder}
-            onChange={(e) => {
-              accessStore.update(
-                (access) => (access.ai302ApiKey = e.currentTarget.value),
-              );
-            }}
-          />
-        </ListItem>
-      </>
+        ></input>
+      </ListItem>
+      <ListItem
+        title={Locale.Settings.Access.AI302.ApiKey.Title}
+        subTitle={Locale.Settings.Access.AI302.ApiKey.SubTitle}
+      >
+        <PasswordInput
+          aria-label={Locale.Settings.Access.AI302.ApiKey.Title}
+          value={accessStore.ai302ApiKey}
+          type="text"
+          placeholder={Locale.Settings.Access.AI302.ApiKey.Placeholder}
+          onChange={(e) => {
+            accessStore.update(
+              (access) => (access.ai302ApiKey = e.currentTarget.value),
+            );
+          }}
+        />
+      </ListItem>
+    </>
   );
 
   return (

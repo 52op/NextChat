@@ -1,15 +1,21 @@
-import { STORAGE_KEY } from "@/app/constant";
+import { ACCESS_CODE_PREFIX, STORAGE_KEY } from "@/app/constant";
 import { SyncStore } from "@/app/store/sync";
+import { SyncClientOptions } from ".";
 
 export type WebDAVConfig = SyncStore["webdav"];
 export type WebDavClient = ReturnType<typeof createWebDavClient>;
 
-export function createWebDavClient(store: SyncStore) {
+export function createWebDavClient(
+  store: SyncStore,
+  options: SyncClientOptions,
+) {
   const folder = STORAGE_KEY;
   const fileName = `${folder}/backup.json`;
   const config = store.webdav;
   const proxyUrl =
-    store.useProxy && store.proxyUrl.length > 0 ? store.proxyUrl : undefined;
+    options.useProxy && options.proxyUrl.length > 0
+      ? options.proxyUrl
+      : undefined;
 
   return {
     async check() {
@@ -60,6 +66,14 @@ export function createWebDavClient(store: SyncStore) {
     },
 
     headers() {
+      // when the sync is managed by the server, the server holds the webdav
+      // credentials. we only send the access code so the proxy can authorize us.
+      if (options.serverManaged) {
+        return {
+          authorization: `Bearer ${ACCESS_CODE_PREFIX}${options.accessCode}`,
+        };
+      }
+
       const auth = btoa(config.username + ":" + config.password);
 
       return {
@@ -81,11 +95,16 @@ export function createWebDavClient(store: SyncStore) {
       try {
         let u = new URL(proxyUrl + pathPrefix + path);
         // add query params
-        u.searchParams.append("endpoint", config.endpoint);
+        if (!options.serverManaged) {
+          u.searchParams.append("endpoint", config.endpoint);
+        }
         proxyMethod && u.searchParams.append("proxy_method", proxyMethod);
         url = u.toString();
       } catch (e) {
-        url = pathPrefix + path + "?endpoint=" + config.endpoint;
+        url = pathPrefix + path;
+        if (!options.serverManaged) {
+          url += "?endpoint=" + config.endpoint;
+        }
         if (proxyMethod) {
           url += "&proxy_method=" + proxyMethod;
         }

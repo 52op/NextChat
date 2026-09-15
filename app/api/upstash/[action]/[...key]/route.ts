@@ -1,15 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSideConfig } from "@/app/config/server";
+import { auth } from "@/app/api/auth";
+import { ModelProvider } from "@/app/constant";
+
+const config = getServerSideConfig();
 
 async function handle(
   req: NextRequest,
   { params }: { params: { action: string; key: string[] } },
 ) {
   const requestUrl = new URL(req.url);
-  const endpoint = requestUrl.searchParams.get("endpoint");
 
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
+
+  const authResult = auth(req, ModelProvider.GPT);
+  if (authResult.error) {
+    return NextResponse.json(authResult, { status: 401 });
+  }
+
+  const isServerManaged = config.serverSync.provider === "upstash";
+
+  const endpoint =
+    requestUrl.searchParams.get("endpoint") ??
+    (isServerManaged ? config.serverSync.upstash.endpoint : null);
+
   const [...key] = params.key;
   // only allow to request to *.upstash.io
   if (!endpoint || !new URL(endpoint).hostname.endsWith(".upstash.io")) {
@@ -45,9 +61,16 @@ async function handle(
     method?.toLowerCase() ?? "",
   );
 
+  // when server side sync is enabled, always use the server side upstash token.
+  // the incoming authorization header only carries the access code for auth().
+  let authorization = req.headers.get("authorization") ?? "";
+  if (isServerManaged) {
+    authorization = `Bearer ${config.serverSync.upstash.apiKey}`;
+  }
+
   const fetchOptions: RequestInit = {
     headers: {
-      authorization: req.headers.get("authorization") ?? "",
+      authorization,
     },
     body: shouldNotHaveBody ? null : req.body,
     method,

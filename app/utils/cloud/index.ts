@@ -14,6 +14,7 @@ export const SyncClients = {
 type SyncClientConfig = {
   [K in keyof typeof SyncClients]: (typeof SyncClients)[K] extends (
     _: infer C,
+    ...args: any[]
   ) => any
     ? C
     : never;
@@ -25,9 +26,21 @@ export type SyncClient = {
   check: () => Promise<boolean>;
 };
 
+export type SyncClientOptions = {
+  useProxy: boolean;
+  proxyUrl: string;
+  serverManaged: boolean;
+  accessCode: string;
+};
+
 export function createSyncClient<T extends ProviderType>(
   provider: T,
   config: SyncClientConfig[T],
+  options: SyncClientOptions,
 ): SyncClient {
-  return SyncClients[provider](config as any) as any;
+  const createClient = SyncClients[provider] as (
+    config: SyncClientConfig[T],
+    options: SyncClientOptions,
+  ) => SyncClient;
+  return createClient(config, options);
 }
