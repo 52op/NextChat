@@ -101,13 +101,17 @@ export function createWebDavClient(
         proxyMethod && u.searchParams.append("proxy_method", proxyMethod);
         url = u.toString();
       } catch (e) {
-        url = pathPrefix + path;
+        // relative url fallback: build the query string manually so that
+        // proxy_method starts with a proper "?" separator
+        const query: string[] = [];
         if (!options.serverManaged) {
-          url += "?endpoint=" + config.endpoint;
+          query.push(`endpoint=${config.endpoint}`);
         }
         if (proxyMethod) {
-          url += "&proxy_method=" + proxyMethod;
+          query.push(`proxy_method=${proxyMethod}`);
         }
+        url =
+          pathPrefix + path + (query.length > 0 ? `?${query.join("&")}` : "");
       }
 
       return url;
