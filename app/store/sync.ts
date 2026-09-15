@@ -28,6 +28,56 @@ export type SyncStore = GetStoreState<typeof useSyncStore>;
 let autoSyncStarted = false;
 let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
 
+// periodic background sync (server managed mode only)
+const PERIODIC_SYNC_INTERVAL = 60 * 1000; // 60s
+let periodicSyncTimer: ReturnType<typeof setInterval> | null = null;
+let isPeriodicSyncing = false;
+let periodicVisibilityHandler: (() => void) | null = null;
+
+function startPeriodicSync() {
+  if (periodicSyncTimer || typeof window === "undefined") return;
+
+  const runSync = async () => {
+    const syncStore = useSyncStore.getState();
+    // only sync when server managed and authorized
+    if (!syncStore.serverSyncProvider()) return;
+    const accessState = useAccessStore.getState();
+    if (accessState.needCode && !accessState.accessCode) return;
+    if (isPeriodicSyncing) return;
+
+    isPeriodicSyncing = true;
+    try {
+      await syncStore.sync();
+      console.log("[Sync] periodic sync done");
+    } catch (e) {
+      console.error("[Sync] periodic sync failed", e);
+    } finally {
+      isPeriodicSyncing = false;
+    }
+  };
+
+  periodicSyncTimer = setInterval(runSync, PERIODIC_SYNC_INTERVAL);
+
+  // also sync when the tab becomes visible again
+  periodicVisibilityHandler = () => {
+    if (document.visibilityState === "visible") {
+      runSync();
+    }
+  };
+  document.addEventListener("visibilitychange", periodicVisibilityHandler);
+}
+
+function stopPeriodicSync() {
+  if (periodicSyncTimer) {
+    clearInterval(periodicSyncTimer);
+    periodicSyncTimer = null;
+  }
+  if (periodicVisibilityHandler) {
+    document.removeEventListener("visibilitychange", periodicVisibilityHandler);
+    periodicVisibilityHandler = null;
+  }
+}
+
 /**
  * Wait for the server managed sync config and the access code to be available,
  * then run the auto sync. Checks on every access store change (e.g. the user
@@ -230,6 +280,8 @@ export const useSyncStore = createPersistStore(
       } catch (e) {
         console.error("[AutoSync] failed", e);
       }
+      // keep the data in sync across devices while the page is open
+      startPeriodicSync();
       return true;
     },
   }),

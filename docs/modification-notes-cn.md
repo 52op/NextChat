@@ -83,6 +83,7 @@ serverSyncProvider: serverConfig.serverSync.provider,
 ### 7. `app/store/sync.ts`（核心）
 - 模块级：`autoSyncStarted`（每会话只跑一次）、`autoSyncTimer`。
 - `registerAutoSync()`：注册 accessStore 订阅 + 1s 轮询（30s 超时兜底）。触发条件满足即执行自动同步，轮询停止；订阅保留（用户稍后输入 Code 仍可触发）。
+- 定时后台同步：`startPeriodicSync()` 在初始 `autoSync()` 成功后开启，每 60 秒 `sync()` 一次（`PERIODIC_SYNC_INTERVAL` 可调），并监听 `visibilitychange`（切回页面时立即同步）。带 `isPeriodicSyncing` 防重入。仅托管模式且已授权时生效。`stopPeriodicSync()` 可随时停止。
 - 新增方法：
   - `serverSyncProvider()`：读 accessStore。
   - `effectiveProvider()`：托管时返回服务端 provider，否则本地 provider。
@@ -99,12 +100,12 @@ serverSyncProvider: serverConfig.serverSync.provider,
 4. 非托管 → true（保持手动模式）。
 5. `needCode && !accessCode` → false（等用户输 Code）。
 6. 所有相关 store 未 hydration → false（避免把空本地状态传上云端）。
-7. 全部满足 → 置 `autoSyncStarted = true`，执行 `sync()`（内部捕获异常，不阻塞页面）。
+7. 全部满足 → 置 `autoSyncStarted = true`，执行 `sync()`（内部捕获异常，不阻塞页面），随后 `startPeriodicSync()` 开启定时后台同步。
 
 **重打补丁注意**：此文件与上游 sync.ts 差异最大。上游若调整 sync/import/export 方法，需保留：
 - `effectiveProvider()` / `serverSyncProvider()` 及所有调用点；
 - `getClient()` 的 options 参数；
-- `autoSync()` 及模块级注册逻辑。
+- `autoSync()`、`registerAutoSync()`、`startPeriodicSync()`/`stopPeriodicSync()` 及模块级注册逻辑。
 
 ### 8. `app/utils/sync.ts`
 新增导出 `isAppStateHydrated()`：检查 Chat/Access/Config/Mask/Prompt 五个 store 的 `_hasHydrated`。导入已存在的 `useChatStore/useAppConfig/useMaskStore/usePromptStore`（文件头部已 import，无新增循环依赖）。
@@ -118,6 +119,7 @@ serverSyncProvider: serverConfig.serverSync.provider,
 - `proxyUrl` 读取改从 `options` 取。
 - `headers()`：`serverManaged` 时返回 `Authorization: Bearer nk-<accessCode>`（供代理鉴权）；否则原 Basic。
 - `path()`：`serverManaged` 时**不加** `endpoint` 查询参数（由服务端回退）。
+- `path()` fallback 分支修复（commit `e41e4f4b`）：catch 分支统一用 query 数组拼接，托管模式下 proxy_method 前补 `?`，避免生成 `/api/webdav/<path>&proxy_method=MKCOL` 的错误 URL（会导致 check 得到 403）。
 
 ### 11. `app/utils/cloud/upstash.ts`
 同 webdav：
