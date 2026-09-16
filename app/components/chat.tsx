@@ -48,6 +48,7 @@ import PluginIcon from "../icons/plugin.svg";
 import ShortcutkeyIcon from "../icons/shortcutkey.svg";
 import McpToolIcon from "../icons/tool.svg";
 import HeadphoneIcon from "../icons/headphone.svg";
+import { VoiceInput } from "./voice-input";
 import {
   BOT_HELLO,
   ChatMessage,
@@ -2116,6 +2117,7 @@ function _Chat() {
                     })}
                   </div>
                 )}
+                <VoiceInput onResult={(text) => setUserInput(text)} />
                 <IconButton
                   icon={<SendWhiteIcon />}
                   text={Locale.Chat.Send}

@@ -105,6 +105,11 @@ declare global {
       UPSTASH_ENDPOINT?: string;
       UPSTASH_USERNAME?: string;
       UPSTASH_API_KEY?: string;
+
+      // iflytek real-time ASR (voice input)
+      IFLYTEK_ASR_APP_ID?: string;
+      IFLYTEK_ASR_API_KEY?: string;
+      IFLYTEK_ASR_API_SECRET?: string;
     }
   }
 }
@@ -187,6 +192,16 @@ export const getServerSideConfig = () => {
 
   const syncProvider = (process.env.SYNC_PROVIDER ?? "").trim().toLowerCase();
   const isServerSync = syncProvider === "webdav" || syncProvider === "upstash";
+
+  // iflytek real-time ASR (voice input), server side only
+  const iflytekAsr = {
+    appId: process.env.IFLYTEK_ASR_APP_ID ?? "",
+    apiKey: process.env.IFLYTEK_ASR_API_KEY ?? "",
+    apiSecret: process.env.IFLYTEK_ASR_API_SECRET ?? "",
+  };
+  const isIflytekAsrEnabled = Object.values(iflytekAsr).every(
+    (v) => v.trim().length > 0,
+  );
 
   // server side sync credentials, only used on the server to proxy requests
   const serverSync = {
@@ -310,5 +325,7 @@ export const getServerSideConfig = () => {
     allowedWebDavEndpoints,
     enableMcp: process.env.ENABLE_MCP === "true",
     serverSync,
+    iflytekAsr,
+    isIflytekAsrEnabled,
   };
 };

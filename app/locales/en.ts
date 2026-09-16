@@ -110,6 +110,14 @@ const en: LocaleType = {
       clearContext: "Clear Context",
     },
   },
+  VoiceInput: {
+    Title: "Press and hold to talk, release to transcribe",
+    MicError: "Cannot access microphone, please check permissions",
+    TooShort: "Recording is too short, please speak again",
+    TranscribeError: "Transcription failed, please retry",
+    NoResult: "No content recognized, please retry",
+    Unsupported: "Voice input is not supported in this browser",
+  },
   Export: {
     Title: "Export Messages",
     Copy: "Copy All",

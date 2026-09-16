@@ -7,14 +7,17 @@ export class AudioHandler {
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private recordBuffer: Int16Array[] = [];
-  private readonly sampleRate = 24000;
+  private readonly sampleRate: number;
 
   private nextPlayTime: number = 0;
   private isPlaying: boolean = false;
   private playbackQueue: AudioBufferSourceNode[] = [];
   private playBuffer: Int16Array[] = [];
 
-  constructor() {
+  constructor(sampleRate: number = 24000) {
+    // note: the actual context sample rate may differ from the requested one,
+    // browsers resample automatically. we rely on this.context.sampleRate.
+    this.sampleRate = sampleRate;
     this.context = new AudioContext({ sampleRate: this.sampleRate });
     // using ChannelMergerNode to get merged audio data, and then get analyser data.
     this.mergeNode = new ChannelMergerNode(this.context, { numberOfInputs: 2 });
@@ -161,8 +164,8 @@ export class AudioHandler {
     view.setUint32(16, 16, true); // format chunk length
     view.setUint16(20, 1, true); // sample format (raw)
     view.setUint16(22, numberOfChannels, true); // channel count
-    view.setUint32(24, this.sampleRate, true); // sample rate
-    view.setUint32(28, this.sampleRate * 4, true); // byte rate (sample rate * block align)
+    view.setUint32(24, this.context.sampleRate, true); // sample rate
+    view.setUint32(28, this.context.sampleRate * 4, true); // byte rate (sample rate * block align)
     view.setUint16(32, numberOfChannels * 2, true); // block align (channel count * bytes per sample)
     view.setUint16(34, bytesPerSample, true); // bits per sample
     view.setUint32(36, 1684108385, false); // data chunk identifier 'data'
@@ -180,15 +183,42 @@ export class AudioHandler {
     audioEndMillis: number | undefined,
   ) {
     const startIndex = audioStartMillis
-      ? Math.floor((audioStartMillis * this.sampleRate) / 1000)
+      ? Math.floor((audioStartMillis * this.context.sampleRate) / 1000)
       : 0;
     const endIndex = audioEndMillis
-      ? Math.floor((audioEndMillis * this.sampleRate) / 1000)
+      ? Math.floor((audioEndMillis * this.context.sampleRate) / 1000)
       : this.recordBuffer.length;
     return this._saveData(
       // @ts-ignore
       new Int16Array(this.recordBuffer.slice(startIndex, endIndex)),
     );
+  }
+
+  /**
+   * Concatenate the recorded samples and resample to the target rate.
+   * Returns raw mono s16le PCM ready to be uploaded to the ASR endpoint.
+   */
+  getRecordedPcm(targetRate: number = 16000): Uint8Array {
+    if (this.recordBuffer.length === 0) return new Uint8Array(0);
+    // @ts-ignore
+    const length = this.recordBuffer.reduce((sum, v) => sum + v.length, 0);
+    const all = new Int16Array(length);
+    let offset = 0;
+    for (const chunk of this.recordBuffer) {
+      all.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const srcRate = this.context.sampleRate;
+    const out = new Int16Array(Math.ceil((all.length * targetRate) / srcRate));
+    for (let i = 0; i < out.length; i++) {
+      const j = (i * srcRate) / targetRate;
+      const i0 = Math.floor(j);
+      const i1 = Math.min(i0 + 1, all.length - 1);
+      const frac = j - i0;
+      out[i] = all[i0] * (1 - frac) + all[i1] * frac;
+    }
+    return new Uint8Array(out.buffer);
   }
   async close() {
     this.recordBuffer = [];

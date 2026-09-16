@@ -109,6 +109,14 @@ const cn = {
       clearContext: "清除上下文",
     },
   },
+  VoiceInput: {
+    Title: "按住说话，松开转写",
+    MicError: "无法访问麦克风，请检查权限设置",
+    TooShort: "录音太短，请再说一次",
+    TranscribeError: "语音转写失败，请重试",
+    NoResult: "没有识别到内容，请重试",
+    Unsupported: "当前浏览器不支持语音输入",
+  },
   Export: {
     Title: "分享聊天记录",
     Copy: "全部复制",

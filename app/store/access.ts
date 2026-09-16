@@ -149,6 +149,7 @@ const DEFAULT_ACCESS_STATE = {
   defaultModel: "",
   visionModels: "",
   serverSyncProvider: "",
+  enableIflytekAsr: false,
 
   // tts config
   edgeTTSVoiceName: "zh-CN-YunxiNeural",

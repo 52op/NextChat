@@ -17,6 +17,8 @@ const DANGER_CONFIG = {
   visionModels: serverConfig.visionModels,
   // only tell the client which provider is managed by the server, never the credentials
   serverSyncProvider: serverConfig.serverSync.provider,
+  // whether the server has iflytek ASR configured (credentials never sent)
+  enableIflytekAsr: serverConfig.isIflytekAsrEnabled,
 };
 
 declare global {
