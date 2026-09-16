@@ -136,6 +136,11 @@ export async function transcribePcm(
       let acceptedChars = 0;
       let lsFlags = 0;
       let lastRawSample = "";
+      // handshake tracing: whether the server ever confirmed the session
+      let gotStarted = false;
+      let sawError = false;
+      let actionCount = 0;
+      let nonAsrMsgCount = 0;
 
       const failTimer = setTimeout(() => {
         if (finished) return;
@@ -173,6 +178,10 @@ export async function transcribePcm(
           chars: acceptedChars,
           ls: lsFlags,
           last: lastRawSample.slice(0, 300),
+          started: gotStarted,
+          error: sawError,
+          actions: actionCount,
+          other: nonAsrMsgCount,
         };
         console.log("[Iflytek ASR] ws " + JSON.stringify(wsStat));
         if (err) reject(err);
@@ -217,11 +226,14 @@ export async function transcribePcm(
         }
 
         if (msg.msg_type === "action") {
+          actionCount++;
           const d = msg.data || {};
           if (d.action === "started") {
+            gotStarted = true;
             // prefer the server provided session id, fall back to the client one
             sessionId = d.sessionId || sessionId;
           } else if (d.action === "error") {
+            sawError = true;
             clearInterval(sendTimer);
             const code = String(d.code ?? "");
             finish(
@@ -234,35 +246,43 @@ export async function transcribePcm(
           return;
         }
 
-        if (msg.msg_type === "result" && msg.res_type === "asr") {
-          const d = msg.data || {};
-          const segId = d.seg_id ?? 0;
-          const type = String(d.cn?.st?.type ?? "0");
-          const wsList = d.cn?.st?.rt || [];
-          const segText = wsList
-            .flatMap((rt: any) => rt.ws || [])
-            .flatMap((ws: any) => ws.cw || [])
-            .map((cw: any) => cw.w ?? "")
-            .join("");
+        if (msg.msg_type === "result") {
+          if (msg.res_type === "asr") {
+            const d = msg.data || {};
+            const segId = d.seg_id ?? 0;
+            const type = String(d.cn?.st?.type ?? "0");
+            const wsList = d.cn?.st?.rt || [];
+            const segText = wsList
+              .flatMap((rt: any) => rt.ws || [])
+              .flatMap((ws: any) => ws.cw || [])
+              .map((cw: any) => cw.w ?? "")
+              .join("");
 
-          resultCount++;
-          typeCounts[type] = (typeCounts[type] || 0) + 1;
-          acceptedChars += segText.length;
-          if (d.ls === true) lsFlags++;
-          if (resultCount <= 2)
-            lastRawSample = JSON.stringify(msg).slice(0, 300);
+            resultCount++;
+            typeCounts[type] = (typeCounts[type] || 0) + 1;
+            acceptedChars += segText.length;
+            if (d.ls === true) lsFlags++;
+            if (resultCount <= 2)
+              lastRawSample = JSON.stringify(msg).slice(0, 300);
 
-          // only final (type=0) results are stable
-          if (type === "0" && segText) {
-            finalSegments.set(segId, segText);
-          }
+            // only final (type=0) results are stable
+            if (type === "0" && segText) {
+              finalSegments.set(segId, segText);
+            }
 
-          if (d.ls === true) {
-            clearInterval(sendTimer);
-            finish();
+            if (d.ls === true) {
+              clearInterval(sendTimer);
+              finish();
+            }
+          } else {
+            // result of a different type (frc, etc.)
+            nonAsrMsgCount++;
           }
           return;
         }
+
+        // any other message shape
+        nonAsrMsgCount++;
       });
 
       ws.on("error", (err) => {
