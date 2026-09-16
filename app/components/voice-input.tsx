@@ -6,10 +6,10 @@ import VoiceIcon from "../icons/voice.svg";
 import LoadingIcon from "../icons/loading.svg";
 import { useAccessStore } from "../store/access";
 import { getHeaders } from "../client/api";
-import { AudioHandler } from "../lib/audio";
 import { showToast } from "./ui-lib";
 import Locale from "../locales";
 import clsx from "clsx";
+import { resampleTo16kPcm } from "../utils/pcm-resample";
 
 // Web Speech API types are not in the default TS lib
 declare global {
@@ -36,48 +36,130 @@ function detectEngine(): Engine {
   return "none";
 }
 
+const TARGET_SAMPLE_RATE = 16000;
+
+/**
+ * Minimal PCM recorder for the voice input.
+ * Uses ScriptProcessorNode instead of AudioWorklet because it is supported
+ * on every browser including iOS Safari, where AudioWorklet + custom sample
+ * rates are unreliable. Output is resampled to 16k mono 16bit PCM.
+ */
+class PcmRecorder {
+  private context: AudioContext | null = null;
+  private processor: ScriptProcessorNode | null = null;
+  private source: MediaStreamAudioSourceNode | null = null;
+  private stream: MediaStream | null = null;
+  private chunks: Float32Array[] = [];
+
+  async start(): Promise<void> {
+    // don't force a sample rate: iOS only supports 44100/48000 and would
+    // silently fail. we record at the context rate and resample later.
+    this.context = new AudioContext();
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    await this.context.resume();
+
+    this.source = this.context.createMediaStreamSource(this.stream);
+    this.processor = this.context.createScriptProcessor(4096, 1, 1);
+    this.processor.onaudioprocess = (e) => {
+      const data = e.inputBuffer.getChannelData(0);
+      // copy, the underlying buffer is reused
+      this.chunks.push(new Float32Array(data));
+    };
+    this.source.connect(this.processor);
+    // must be connected to destination or the callback stops firing on some
+    // browsers (webkit), use a zero gain to keep it silent
+    const gain = this.context.createGain();
+    gain.gain.value = 0;
+    this.processor.connect(gain);
+    gain.connect(this.context.destination);
+  }
+
+  stop(): Uint8Array {
+    this.teardown();
+    return this.toPcm16k();
+  }
+
+  async cancel(): Promise<void> {
+    this.chunks = [];
+    this.teardown();
+    await this.context?.close();
+    this.context = null;
+  }
+
+  private teardown() {
+    try {
+      this.processor?.disconnect();
+      this.source?.disconnect();
+    } catch {
+      /* noop */
+    }
+    this.stream?.getTracks().forEach((track) => track.stop());
+    this.processor = null;
+    this.source = null;
+    this.stream = null;
+  }
+
+  private toPcm16k(): Uint8Array {
+    const srcRate = this.context?.sampleRate || 48000;
+    const total = this.chunks.reduce((sum, c) => sum + c.length, 0);
+    if (total === 0) return new Uint8Array(0);
+
+    // concatenate all recorded samples
+    const all = new Float32Array(total);
+    let offset = 0;
+    for (const chunk of this.chunks) {
+      all.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return resampleTo16kPcm(all, srcRate);
+  }
+}
+
 export function VoiceInput({ onResult }: VoiceInputProps) {
   const [engine] = useState<Engine>(detectEngine);
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
 
-  const audioHandlerRef = useRef<AudioHandler | null>(null);
+  const recorderRef = useRef<PcmRecorder | null>(null);
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     return () => {
-      audioHandlerRef.current?.close();
+      recorderRef.current?.cancel();
       recognitionRef.current?.abort?.();
     };
   }, []);
 
   const startIflytek = useCallback(async () => {
     try {
-      const handler = new AudioHandler(16000);
-      audioHandlerRef.current = handler;
-      await handler.startRecording(() => {});
+      const recorder = new PcmRecorder();
+      recorderRef.current = recorder;
+      await recorder.start();
       setRecording(true);
     } catch (e) {
       console.error("[VoiceInput] mic start failed", e);
+      recorderRef.current = null;
       showToast(Locale.VoiceInput.MicError);
     }
   }, []);
 
   const stopIflytek = useCallback(async () => {
-    const handler = audioHandlerRef.current;
+    const recorder = recorderRef.current;
     setRecording(false);
-    audioHandlerRef.current = null;
-    if (!handler) return;
-
-    try {
-      handler.stopRecording();
-    } catch {
-      // ignore, pcm may still be available
-    }
+    recorderRef.current = null;
+    if (!recorder) return;
 
     setProcessing(true);
     try {
-      const pcm = handler.getRecordedPcm(16000);
+      const pcm = recorder.stop();
+      // 3200 bytes = 100ms at 16k mono 16bit
       if (pcm.length < 3200) {
         showToast(Locale.VoiceInput.TooShort);
         return;
@@ -106,7 +188,7 @@ export function VoiceInput({ onResult }: VoiceInputProps) {
       console.error("[VoiceInput] iflytek failed", e);
       showToast(Locale.VoiceInput.TranscribeError);
     } finally {
-      handler.close();
+      await recorder.cancel();
       setProcessing(false);
     }
   }, [onResult]);
@@ -154,14 +236,23 @@ export function VoiceInput({ onResult }: VoiceInputProps) {
     setRecording(false);
   }, []);
 
-  const handlePointerDown = useCallback(() => {
-    if (processing) return;
-    if (engine === "iflytek") {
-      startIflytek();
-    } else if (engine === "web-speech") {
-      startWebSpeech();
-    }
-  }, [engine, processing, startIflytek, startWebSpeech]);
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (processing) return;
+      // keep receiving pointer events even if the finger slides a bit
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* noop */
+      }
+      if (engine === "iflytek") {
+        startIflytek();
+      } else if (engine === "web-speech") {
+        startWebSpeech();
+      }
+    },
+    [engine, processing, startIflytek, startWebSpeech],
+  );
 
   const handlePointerUp = useCallback(() => {
     if (engine === "iflytek") {
@@ -173,8 +264,8 @@ export function VoiceInput({ onResult }: VoiceInputProps) {
 
   const handleCancel = useCallback(() => {
     if (engine === "iflytek") {
-      audioHandlerRef.current?.close();
-      audioHandlerRef.current = null;
+      recorderRef.current?.cancel();
+      recorderRef.current = null;
       setRecording(false);
     } else if (engine === "web-speech") {
       recognitionRef.current?.abort?.();
@@ -190,7 +281,6 @@ export function VoiceInput({ onResult }: VoiceInputProps) {
       title={Locale.VoiceInput.Title}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
-      onPointerLeave={recording ? handleCancel : undefined}
       onPointerCancel={recording ? handleCancel : undefined}
       data-engine={engine}
     >

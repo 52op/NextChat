@@ -69,9 +69,9 @@ export class AudioHandler {
 
           const uint8Data = new Uint8Array(int16Data.buffer);
           onChunk(uint8Data);
-          // save recordBuffer
-          // @ts-ignore
-          this.recordBuffer.push.apply(this.recordBuffer, int16Data);
+          // keep each chunk as its own Int16Array so downstream code can
+          // concatenate/resample them without flattening bugs
+          this.recordBuffer.push(int16Data);
         }
       };
 
@@ -113,8 +113,8 @@ export class AudioHandler {
     if (!this.isPlaying) return;
 
     const int16Data = new Int16Array(chunk.buffer);
-    // @ts-ignore
-    this.playBuffer.push.apply(this.playBuffer, int16Data); // save playBuffer
+    // keep each chunk separate so it can be concatenated correctly later
+    this.playBuffer.push(int16Data);
 
     const float32Data = new Float32Array(int16Data.length);
     for (let i = 0; i < int16Data.length; i++) {
@@ -175,22 +175,36 @@ export class AudioHandler {
     return new Blob([view, data.buffer], { type: "audio/mpeg" });
   }
   savePlayFile() {
-    // @ts-ignore
-    return this._saveData(new Int16Array(this.playBuffer));
+    const total = this.playBuffer.reduce((sum, c) => sum + c.length, 0);
+    const all = new Int16Array(total);
+    let offset = 0;
+    for (const chunk of this.playBuffer) {
+      all.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return this._saveData(all);
   }
   saveRecordFile(
     audioStartMillis: number | undefined,
     audioEndMillis: number | undefined,
   ) {
+    // merge recorded chunks into one flat int16 buffer
+    const total = this.recordBuffer.reduce((sum, c) => sum + c.length, 0);
+    const all = new Int16Array(total);
+    let offset = 0;
+    for (const chunk of this.recordBuffer) {
+      all.set(chunk, offset);
+      offset += chunk.length;
+    }
+
     const startIndex = audioStartMillis
       ? Math.floor((audioStartMillis * this.context.sampleRate) / 1000)
       : 0;
     const endIndex = audioEndMillis
       ? Math.floor((audioEndMillis * this.context.sampleRate) / 1000)
-      : this.recordBuffer.length;
+      : all.length;
     return this._saveData(
-      // @ts-ignore
-      new Int16Array(this.recordBuffer.slice(startIndex, endIndex)),
+      all.slice(Math.max(0, startIndex), Math.max(startIndex, endIndex)),
     );
   }
 
