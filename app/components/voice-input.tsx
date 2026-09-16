@@ -98,8 +98,12 @@ export async function prepareVoiceRecorder(): Promise<void> {
   try {
     sharedStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
+        // ASR wants the raw mic signal. echoCancellation/noiseSuppression are
+        // suspected of carving the speech out of the recording on phones
+        // (same constraints across every recording variant, still empty text),
+        // so disable them and let the ASR see the true signal.
+        echoCancellation: false,
+        noiseSuppression: false,
       },
     });
   } catch (e) {
@@ -140,8 +144,8 @@ class MediaRecorderRecorder {
       try {
         sharedStream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
+            echoCancellation: false,
+            noiseSuppression: false,
           },
         });
       } catch (e) {
