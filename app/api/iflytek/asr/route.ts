@@ -3,6 +3,11 @@ import { getServerSideConfig } from "@/app/config/server";
 import { auth } from "@/app/api/auth";
 import { ModelProvider } from "@/app/constant";
 import { transcribePcm } from "@/app/utils/iflytek-asr";
+import {
+  isPcmSilent,
+  normalizeGain,
+  pcmDiagnostics,
+} from "@/app/utils/pcm-resample";
 
 // vercel hobby: node runtime can run up to 60s
 export const runtime = "nodejs";
@@ -63,8 +68,33 @@ async function handle(req: NextRequest) {
   }
 
   try {
-    const text = await transcribePcm(serverConfig.iflytekAsr, pcm);
-    return NextResponse.json({ text });
+    const diag = pcmDiagnostics(pcm);
+    console.log(
+      "[Iflytek ASR] in=" +
+        diag.frameCount +
+        "f/" +
+        diag.durationSec.toFixed(1) +
+        "s peak=" +
+        diag.peak +
+        " rms=" +
+        diag.rms +
+        " silent=" +
+        isPcmSilent(pcm),
+    );
+
+    // normalizing the level is a safe single-variable behavior change: it can
+    // only help (never attenuates), and it lets the whole test cycle tell us
+    // whether a whisper-quiet recording was the problem
+    const normalized = normalizeGain(pcm);
+    const text = await transcribePcm(serverConfig.iflytekAsr, normalized);
+    console.log("[Iflytek ASR] out=" + JSON.stringify(text));
+    const diagOut = pcmDiagnostics(normalized);
+    return NextResponse.json({
+      text,
+      debug: `进包${diag.frameCount}采样/${diag.durationSec.toFixed(1)}s 峰值${
+        diag.peak
+      } rms${Math.round(diag.rms)} 后峰值${diagOut.peak}`,
+    });
   } catch (e: any) {
     console.error("[Iflytek ASR]", e);
     return NextResponse.json(

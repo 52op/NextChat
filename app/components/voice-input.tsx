@@ -386,6 +386,24 @@ export function VoiceInputBar({
         showToast(Locale.VoiceInput.Silent);
         return;
       }
+      try {
+        const { pcmDiagnostics } = await import("../utils/pcm-resample");
+        const d = pcmDiagnostics(pcm);
+        console.log(
+          "[VoiceInput] pcm peak=" +
+            d.peak +
+            " rms=" +
+            Math.round(d.rms) +
+            " frames=" +
+            d.frameCount +
+            " (" +
+            d.durationSec.toFixed(1) +
+            "s) loudFrames=" +
+            d.loudFrames,
+        );
+      } catch {
+        /* noop */
+      }
 
       // /api/iflytek/asr only reads the Authorization header, while
       // getHeaders() may put the credential into a provider specific header
@@ -417,7 +435,7 @@ export function VoiceInputBar({
       if (text) {
         onResult(text);
       } else {
-        showToast(Locale.VoiceInput.NoResult);
+        showToast(json.debug || Locale.VoiceInput.NoResult);
       }
     } catch (e) {
       console.error("[VoiceInput] iflytek failed", e);

@@ -1,5 +1,7 @@
 import {
   isPcmSilent,
+  normalizeGain,
+  pcmDiagnostics,
   resampleTo16kPcm,
 } from "../app/utils/pcm-resample";
 
@@ -45,5 +47,60 @@ describe("resampleTo16kPcm", () => {
     }
     const pcm = resampleTo16kPcm(samples, 48000);
     expect(isPcmSilent(pcm)).toBe(false);
+  });
+});
+
+describe("pcmDiagnostics", () => {
+  test("reports peak/rms/duration", () => {
+    const values = Array.from({ length: 16000 }, (_, i) =>
+      i % 2 === 0 ? -8000 : 8000,
+    );
+    const d = pcmDiagnostics(pcmFromInt16(values));
+    expect(d.frameCount).toBe(16000);
+    expect(d.durationSec).toBeCloseTo(1);
+    expect(d.peak).toBe(8000);
+    expect(d.rms).toBeCloseTo(8000);
+    expect(d.loudFrames).toBe(16000);
+  });
+});
+
+describe("normalizeGain", () => {
+  test("lifts a quiet buffer to the target peak, never attenuates", () => {
+    const values = Array.from({ length: 1600 }, (_, i) =>
+      i % 2 === 0 ? -200 : 200,
+    );
+    const pcm = pcmFromInt16(values);
+    const out = normalizeGain(pcm, 30000);
+    const peak = pcmDiagnostics(out).peak;
+    expect(peak).toBeGreaterThan(200);
+    expect(peak).toBeLessThanOrEqual(30000);
+    // monotonic: normalized keeps sign for every sample
+    const inV = new Int16Array(pcm.buffer);
+    const outV = new Int16Array(out.buffer);
+    for (let i = 0; i < inV.length; i++) {
+      expect(Math.sign(outV[i])).toBe(Math.sign(inV[i]));
+    }
+  });
+
+  test("already-loud buffer is left untouched", () => {
+    const values = Array.from({ length: 1600 }, (_, i) =>
+      i % 2 === 0 ? -29500 : 29500,
+    );
+    const pcm = pcmFromInt16(values);
+    expect(normalizeGain(pcm, 30000)).toBe(pcm);
+  });
+
+  test("clamps at 20x max gain", () => {
+    const values = Array.from({ length: 1600 }, (_, i) =>
+      i % 2 === 0 ? -1 : 1,
+    );
+    const out = normalizeGain(pcmFromInt16(values), 30000);
+    const peak = pcmDiagnostics(out).peak;
+    expect(peak).toBe(20); // 1 * 20
+  });
+
+  test("all-zero stays all-zero", () => {
+    const pcm = pcmFromInt16(new Array(1600).fill(0));
+    expect(normalizeGain(pcm, 30000)).toBe(pcm);
   });
 });
