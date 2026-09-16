@@ -2092,6 +2092,13 @@ function _Chat() {
                   />
                 ) : (
                   <>
+                    {voiceEngine !== "none" && (
+                      <VoiceInputBar
+                        voiceMode={false}
+                        onResult={(text) => setUserInput(text)}
+                        onToggleMode={() => setVoiceMode(true)}
+                      />
+                    )}
                     <textarea
                       id="chat-input"
                       ref={inputRef}
@@ -2135,21 +2142,13 @@ function _Chat() {
                         })}
                       </div>
                     )}
-                    {voiceEngine !== "none" ? (
-                      <VoiceInputBar
-                        voiceMode={false}
-                        onResult={(text) => setUserInput(text)}
-                        onToggleMode={() => setVoiceMode(true)}
-                      />
-                    ) : (
-                      <IconButton
-                        icon={<SendWhiteIcon />}
-                        text={Locale.Chat.Send}
-                        className={styles["chat-input-send"]}
-                        type="primary"
-                        onClick={() => doSubmit(userInput)}
-                      />
-                    )}
+                    <IconButton
+                      icon={<SendWhiteIcon />}
+                      text={Locale.Chat.Send}
+                      className={styles["chat-input-send"]}
+                      type="primary"
+                      onClick={() => doSubmit(userInput)}
+                    />
                   </>
                 )}
               </label>

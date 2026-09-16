@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./voice-input.module.scss";
 import VoiceIcon from "../icons/voice.svg";
-import VoiceWhiteIcon from "../icons/voice-white.svg";
 import LoadingIcon from "../icons/loading.svg";
 import { useAccessStore } from "../store/access";
 import { getHeaders } from "../client/api";
@@ -339,80 +338,135 @@ export function VoiceInputBar({
     updateRecording(false);
   }, [updateRecording]);
 
-  // ---------- hold-to-talk pointer handlers ----------
-  const handleHoldDown = useCallback(
-    (e: React.PointerEvent) => {
-      if (processing || starting || recording) return;
-      // keep receiving pointer events even if the finger slides a bit
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        /* noop */
-      }
-      pressedRef.current = true;
-      if (engine === "iflytek") {
-        startIflytek();
-      } else if (engine === "web-speech") {
-        startWebSpeech();
-      }
+  // ---------- hold-to-talk handlers ----------
+  // Use touch + mouse events directly (like WeChat) and preventDefault all
+  // touch gestures: this stops iOS text selection / long-press callout from
+  // hijacking the pointer stream. A timestamp suppresses the synthetic mouse
+  // events that browsers fire right after touch.
+  const lastTouchTimeRef = useRef(0);
+
+  const startHold = useCallback(() => {
+    if (processing || starting || recording) return;
+    pressedRef.current = true;
+    if (engine === "iflytek") {
+      startIflytek();
+    } else if (engine === "web-speech") {
+      startWebSpeech();
+    }
+  }, [engine, processing, starting, recording, startIflytek, startWebSpeech]);
+
+  const endHold = useCallback(() => {
+    if (!pressedRef.current) return;
+    pressedRef.current = false;
+    if (engine === "iflytek") {
+      stopIflytek();
+    } else if (engine === "web-speech") {
+      stopWebSpeech();
+    }
+  }, [engine, stopIflytek, stopWebSpeech]);
+
+  const cancelHold = useCallback(() => {
+    if (!pressedRef.current) return;
+    pressedRef.current = false;
+    armedRef.current = false;
+    if (engine === "iflytek") {
+      recorderRef.current?.cancel();
+      recorderRef.current = null;
+      setProcessing(false);
+      updateRecording(false);
+    } else if (engine === "web-speech") {
+      recognitionRef.current?.abort?.();
+      updateRecording(false);
+      setProcessing(false);
+    }
+  }, [engine, updateRecording]);
+
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault();
+      lastTouchTimeRef.current = Date.now();
+      startHold();
     },
-    [engine, processing, starting, recording, startIflytek, startWebSpeech],
+    [startHold],
   );
 
-  const handleHoldUp = useCallback(
-    (e: React.PointerEvent) => {
-      pressedRef.current = false;
-      if (engine === "iflytek") {
-        stopIflytek();
-      } else if (engine === "web-speech") {
-        stopWebSpeech();
-      }
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault();
+      endHold();
     },
-    [engine, stopIflytek, stopWebSpeech],
+    [endHold],
   );
 
-  const handleHoldCancel = useCallback(
-    (e: React.PointerEvent) => {
-      pressedRef.current = false;
-      armedRef.current = false;
-      if (engine === "iflytek") {
-        recorderRef.current?.cancel();
-        recorderRef.current = null;
-        setProcessing(false);
-        updateRecording(false);
-      } else if (engine === "web-speech") {
-        recognitionRef.current?.abort?.();
-        updateRecording(false);
-        setProcessing(false);
+  const handleTouchCancel = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault();
+      cancelHold();
+    },
+    [cancelHold],
+  );
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      // suppress the synthetic mouse events fired after a real touch
+      if (Date.now() - lastTouchTimeRef.current < 700) return;
+      e.preventDefault();
+      startHold();
+    },
+    [startHold],
+  );
+
+  const handleMouseUp = useCallback(
+    (e: React.MouseEvent) => {
+      if (Date.now() - lastTouchTimeRef.current < 700) return;
+      e.preventDefault();
+      endHold();
+    },
+    [endHold],
+  );
+
+  const handleMouseLeave = useCallback(
+    (e: React.MouseEvent) => {
+      if (Date.now() - lastTouchTimeRef.current < 700) return;
+      if (pressedRef.current) {
+        cancelHold();
       }
     },
-    [engine, updateRecording],
+    [cancelHold],
   );
 
   if (engine === "none") return null;
 
+  // voice mode: the whole input area becomes a hold-to-talk surface,
+  // with a keyboard toggle on the left to switch back to text mode
   if (voiceMode) {
-    // voice mode: the whole input area becomes a hold-to-talk surface,
-    // with a keyboard toggle at the send button position to switch back
     return (
       <div className={styles["voice-mode-wrap"]}>
+        <span
+          className={styles["voice-mode-toggle"]}
+          title={Locale.VoiceInput.ToggleToText}
+          onClick={onToggleMode}
+        >
+          <KeyboardIcon />
+        </span>
         <div
           className={clsx(
             styles["hold-to-talk"],
             recording && styles["recording"],
+            starting && styles["starting"],
+            processing && styles["processing"],
           )}
-          onPointerDown={handleHoldDown}
-          onPointerUp={handleHoldUp}
-          onPointerCancel={handleHoldCancel}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchCancel}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
         >
-          {processing ? (
-            <LoadingIcon />
-          ) : recording ? (
-            <VoiceWhiteIcon />
-          ) : (
-            <VoiceIcon />
-          )}
-          <span>
+          <span className={styles["hold-to-talk-icon"]}>
+            {processing || starting ? <LoadingIcon /> : <VoiceIcon />}
+          </span>
+          <span className={styles["hold-to-talk-text"]}>
             {processing
               ? Locale.VoiceInput.Processing
               : recording
@@ -420,22 +474,16 @@ export function VoiceInputBar({
               : Locale.VoiceInput.HoldToTalk}
           </span>
         </div>
-        <span
-          className={styles["voice-toggle"]}
-          title={Locale.VoiceInput.ToggleToText}
-          onClick={onToggleMode}
-        >
-          <KeyboardIcon />
-        </span>
       </div>
     );
   }
 
-  // text mode: a mic toggle button in place of the send button
+  // text mode: a mic toggle button on the left of the input box
   return (
     <span
-      className={styles["voice-toggle"]}
+      className={styles["voice-mode-toggle"]}
       title={Locale.VoiceInput.ToggleToVoice}
+      data-testid="voice-toggle"
       onClick={onToggleMode}
     >
       <VoiceIcon />
