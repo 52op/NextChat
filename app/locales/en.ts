@@ -114,6 +114,7 @@ const en: LocaleType = {
     Title: "Press and hold to talk, release to transcribe",
     MicError: "Cannot access microphone, please check permissions",
     TooShort: "Recording is too short, please speak again",
+    Silent: "No sound detected, please check your microphone and retry",
     TranscribeError: "Transcription failed, please retry",
     NoResult: "No content recognized, please retry",
     Unsupported: "Voice input is not supported in this browser",

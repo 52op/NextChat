@@ -25,3 +25,19 @@ export function resampleTo16kPcm(
   }
   return new Uint8Array(pcm.buffer);
 }
+
+/**
+ * Rough silence detection for a s16le PCM buffer.
+ * Returns true when the peak amplitude is below the threshold, i.e. the
+ * recording is probably silent (no voice picked up).
+ */
+export function isPcmSilent(pcm: Uint8Array, threshold = 300): boolean {
+  if (pcm.length === 0) return true;
+  const view = new Int16Array(pcm.buffer);
+  let peak = 0;
+  for (let i = 0; i < view.length; i += 100) {
+    const v = Math.abs(view[i]);
+    if (v > peak) peak = v;
+  }
+  return peak < threshold;
+}

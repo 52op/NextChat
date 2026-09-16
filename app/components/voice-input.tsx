@@ -9,7 +9,7 @@ import { getHeaders } from "../client/api";
 import { showToast } from "./ui-lib";
 import Locale from "../locales";
 import clsx from "clsx";
-import { resampleTo16kPcm } from "../utils/pcm-resample";
+import { resampleTo16kPcm, isPcmSilent } from "../utils/pcm-resample";
 import KeyboardIcon from "../icons/keyboard.svg";
 
 // Web Speech API types are not in the default TS lib
@@ -65,18 +65,28 @@ class PcmRecorder {
     // don't force a sample rate: iOS only supports 44100/48000 and would
     // silently fail. we record at the context rate and resample later.
     this.context = new AudioContext();
+    // CRITICAL on iOS: resume() must be called inside the user gesture stack.
+    // awaiting getUserMedia first leaves the gesture context and the resume
+    // gets rejected, leaving the context suspended and onaudioprocess silent.
+    // resume is the first await so it runs synchronously within touchstart.
+    try {
+      await this.context.resume();
+    } catch (e) {
+      console.warn("[VoiceInput] audio context resume failed", e);
+    }
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
       },
     });
-    // resume can reject on iOS when not running from a direct user gesture;
-    // wrap it so recording still proceeds where possible
-    try {
-      await this.context.resume();
-    } catch (e) {
-      console.warn("[VoiceInput] audio context resume failed", e);
+    // some browsers suspend again after the mic prompt; try once more
+    if (this.context.state !== "running") {
+      try {
+        await this.context.resume();
+      } catch {
+        /* ignore */
+      }
     }
 
     this.source = this.context.createMediaStreamSource(this.stream);
@@ -261,6 +271,13 @@ export function VoiceInputBar({
       // 3200 bytes = 100ms at 16k mono 16bit
       if (pcm.length < 3200) {
         showToast(Locale.VoiceInput.TooShort);
+        return;
+      }
+      // if the audio graph was interrupted (e.g. iOS resume failure), the
+      // buffer has length but no voice; tell the user instead of transcribing
+      if (isPcmSilent(pcm)) {
+        console.warn("[VoiceInput] recorded audio is silent");
+        showToast(Locale.VoiceInput.Silent);
         return;
       }
 

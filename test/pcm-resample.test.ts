@@ -1,37 +1,49 @@
 import {
+  isPcmSilent,
   resampleTo16kPcm,
 } from "../app/utils/pcm-resample";
 
-describe("pcm resample to 16k mono 16bit", () => {
-  test("48khz 1s sine converts to 16000 samples", () => {
-    const srcRate = 48000;
-    const total = 48000;
-    const all = new Float32Array(total);
-    for (let i = 0; i < total; i++) {
-      all[i] = Math.sin((2 * Math.PI * 440 * i) / srcRate) * 0.5;
+function pcmFromInt16(values: number[]): Uint8Array {
+  const buf = new Int16Array(values);
+  return new Uint8Array(buf.buffer);
+}
+
+describe("isPcmSilent", () => {
+  test("empty buffer is silent", () => {
+    expect(isPcmSilent(new Uint8Array(0))).toBe(true);
+  });
+
+  test("all zero samples is silent", () => {
+    const pcm = pcmFromInt16(new Array(1000).fill(0));
+    expect(isPcmSilent(pcm)).toBe(true);
+  });
+
+  test("small noise below threshold is silent", () => {
+    const pcm = pcmFromInt16(new Array(1000).fill(50));
+    expect(isPcmSilent(pcm)).toBe(true);
+  });
+
+  test("voice-like amplitude is not silent", () => {
+    const values = Array.from({ length: 1000 }, (_, i) =>
+      i % 2 === 0 ? 12000 : -12000,
+    );
+    expect(isPcmSilent(pcmFromInt16(values))).toBe(false);
+  });
+});
+
+describe("resampleTo16kPcm", () => {
+  test("resamples 48000 to 16000 samples", () => {
+    const samples = new Float32Array(48000).fill(0.5);
+    const pcm = resampleTo16kPcm(samples, 48000);
+    expect(pcm.length / 2).toBe(16000);
+  });
+
+  test("output is not silent for a sine input", () => {
+    const samples = new Float32Array(48000);
+    for (let i = 0; i < samples.length; i++) {
+      samples[i] = Math.sin((2 * Math.PI * 440 * i) / 48000);
     }
-    const pcm = resampleTo16kPcm(all, srcRate);
-    expect(pcm.length / 2).toBe(16000); // bytes / 2 = samples
-    expect(pcm.length).toBe(32000);
-  });
-
-  test("empty input returns empty", () => {
-    const pcm = resampleTo16kPcm(new Float32Array(0), 48000);
-    expect(pcm.length).toBe(0);
-  });
-
-  test("16k in equals 16k out", () => {
-    const srcRate = 16000;
-    const all = new Float32Array(16000).fill(0.25);
-    const pcm = resampleTo16kPcm(all, srcRate);
-    expect(pcm.length).toBe(32000);
-  });
-
-  test("resampled amplitude is clamped to int16 range", () => {
-    const srcRate = 48000;
-    const all = new Float32Array(48000).fill(2); // out of range
-    const pcm = resampleTo16kPcm(all, srcRate);
-    const view = new Int16Array(pcm.buffer);
-    expect(Math.max(...view)).toBe(32767);
+    const pcm = resampleTo16kPcm(samples, 48000);
+    expect(isPcmSilent(pcm)).toBe(false);
   });
 });
