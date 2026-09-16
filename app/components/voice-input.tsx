@@ -158,6 +158,25 @@ class MediaRecorderRecorder {
     }
     this.stream = sharedStream;
     this.recorder = new MediaRecorder(sharedStream);
+    // some browsers negotiate (requested) constraints; log the effective ones
+    // so we can see if echoCancellation really got disabled on the device
+    const track = sharedStream.getAudioTracks?.()[0];
+    const settings = (track as any)?.getSettings?.();
+    if (settings) {
+      console.log(
+        "[VoiceInput] track sampleRate=" +
+          settings.sampleRate +
+          " ec=" +
+          settings.echoCancellation +
+          " ns=" +
+          settings.noiseSuppression +
+          " agc=" +
+          settings.autoGainControl +
+          " channelCount=" +
+          settings.channelCount,
+      );
+    }
+    console.log("[VoiceInput] MediaRecorder mime=" + this.recorder.mimeType);
     this.recorder.addEventListener("dataavailable", (e) => {
       if (e.data && e.data.size > 0) this.chunks.push(e.data);
     });

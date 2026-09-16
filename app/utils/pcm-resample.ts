@@ -53,6 +53,8 @@ export interface PcmDiagnostics {
   rms: number;
   /** frames with |sample| > 500 (a plosive/carrier level) */
   loudFrames: number;
+  /** zero crossings per second (speech ~ 750-3500, hum/beep far lower or higher) */
+  zeroCrossRate: number;
 }
 
 /**
@@ -66,11 +68,16 @@ export function pcmDiagnostics(pcm: Uint8Array): PcmDiagnostics {
   let peak = 0;
   let sumSq = 0;
   let loudFrames = 0;
+  let crossings = 0;
+  let prev = 0;
   for (let i = 0; i < view.length; i++) {
     const v = Math.abs(view[i]);
     if (v > peak) peak = v;
     sumSq += v * v;
     if (v > 500) loudFrames++;
+    const s = view[i];
+    if ((prev < 0 && s >= 0) || (prev >= 0 && s < 0)) crossings++;
+    prev = s;
   }
   const n = view.length;
   return {
@@ -79,6 +86,7 @@ export function pcmDiagnostics(pcm: Uint8Array): PcmDiagnostics {
     peak,
     rms: n === 0 ? 0 : Math.sqrt(sumSq / n),
     loudFrames,
+    zeroCrossRate: n === 0 ? 0 : crossings / (n / 16000),
   };
 }
 

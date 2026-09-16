@@ -99,7 +99,7 @@ async function handle(req: NextRequest) {
         act.activeFrames
       }(${act.percent}%) 语音${act.firstSec.toFixed(1)}-${act.lastSec.toFixed(
         1,
-      )}s`,
+      )}s zcr${diag.zeroCrossRate.toFixed(0)}`,
     });
   } catch (e: any) {
     console.error("[Iflytek ASR]", e);

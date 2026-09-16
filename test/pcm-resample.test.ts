@@ -62,6 +62,8 @@ describe("pcmDiagnostics", () => {
     expect(d.peak).toBe(8000);
     expect(d.rms).toBeCloseTo(8000);
     expect(d.loudFrames).toBe(16000);
+    // alternates every sample: 16000 zero crossings in 1s
+    expect(d.zeroCrossRate).toBe(16000);
   });
 });
 
