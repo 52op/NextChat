@@ -48,7 +48,7 @@ import PluginIcon from "../icons/plugin.svg";
 import ShortcutkeyIcon from "../icons/shortcutkey.svg";
 import McpToolIcon from "../icons/tool.svg";
 import HeadphoneIcon from "../icons/headphone.svg";
-import { VoiceInput } from "./voice-input";
+import { VoiceInputBar, useVoiceEngine } from "./voice-input";
 import {
   BOT_HELLO,
   ChatMessage,
@@ -836,7 +836,6 @@ export function ChatActions(props: {
         {!isMobileScreen && <MCPAction />}
       </>
       <div className={styles["chat-input-actions-end"]}>
-        <VoiceInput onResult={props.setUserInput} />
         {config.realtimeConfig.enable && (
           <ChatAction
             onClick={() => props.setShowChatSidePanel(true)}
@@ -1001,6 +1000,8 @@ function _Chat() {
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [userInput, setUserInput] = useState("");
+  const [voiceMode, setVoiceMode] = useState(false);
+  const voiceEngine = useVoiceEngine();
   const [isLoading, setIsLoading] = useState(false);
   const { submitKey, shouldSubmit } = useSubmitHandler();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -2075,56 +2076,82 @@ function _Chat() {
                   [styles["chat-input-panel-inner-attach"]]:
                     attachImages.length !== 0,
                 })}
-                htmlFor="chat-input"
+                htmlFor={voiceMode ? undefined : "chat-input"}
               >
-                <textarea
-                  id="chat-input"
-                  ref={inputRef}
-                  className={styles["chat-input"]}
-                  placeholder={Locale.Chat.Input(submitKey)}
-                  onInput={(e) => onInput(e.currentTarget.value)}
-                  value={userInput}
-                  onKeyDown={onInputKeyDown}
-                  onFocus={scrollToBottom}
-                  onClick={scrollToBottom}
-                  onPaste={handlePaste}
-                  rows={inputRows}
-                  autoFocus={autoFocus}
-                  style={{
-                    fontSize: config.fontSize,
-                    fontFamily: config.fontFamily,
-                  }}
-                />
-                {attachImages.length != 0 && (
-                  <div className={styles["attach-images"]}>
-                    {attachImages.map((image, index) => {
-                      return (
-                        <div
-                          key={index}
-                          className={styles["attach-image"]}
-                          style={{ backgroundImage: `url("${image}")` }}
-                        >
-                          <div className={styles["attach-image-mask"]}>
-                            <DeleteImageButton
-                              deleteImage={() => {
-                                setAttachImages(
-                                  attachImages.filter((_, i) => i !== index),
-                                );
-                              }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                {voiceMode ? (
+                  <VoiceInputBar
+                    voiceMode
+                    onResult={(text) => {
+                      setUserInput(text);
+                      setVoiceMode(false);
+                      if (text) {
+                        inputRef.current?.focus();
+                      }
+                    }}
+                    onToggleMode={() => setVoiceMode(false)}
+                  />
+                ) : (
+                  <>
+                    <textarea
+                      id="chat-input"
+                      ref={inputRef}
+                      className={styles["chat-input"]}
+                      placeholder={Locale.Chat.Input(submitKey)}
+                      onInput={(e) => onInput(e.currentTarget.value)}
+                      value={userInput}
+                      onKeyDown={onInputKeyDown}
+                      onFocus={scrollToBottom}
+                      onClick={scrollToBottom}
+                      onPaste={handlePaste}
+                      rows={inputRows}
+                      autoFocus={autoFocus}
+                      style={{
+                        fontSize: config.fontSize,
+                        fontFamily: config.fontFamily,
+                      }}
+                    />
+                    {attachImages.length != 0 && (
+                      <div className={styles["attach-images"]}>
+                        {attachImages.map((image, index) => {
+                          return (
+                            <div
+                              key={index}
+                              className={styles["attach-image"]}
+                              style={{ backgroundImage: `url("${image}")` }}
+                            >
+                              <div className={styles["attach-image-mask"]}>
+                                <DeleteImageButton
+                                  deleteImage={() => {
+                                    setAttachImages(
+                                      attachImages.filter(
+                                        (_, i) => i !== index,
+                                      ),
+                                    );
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {voiceEngine !== "none" ? (
+                      <VoiceInputBar
+                        voiceMode={false}
+                        onResult={(text) => setUserInput(text)}
+                        onToggleMode={() => setVoiceMode(true)}
+                      />
+                    ) : (
+                      <IconButton
+                        icon={<SendWhiteIcon />}
+                        text={Locale.Chat.Send}
+                        className={styles["chat-input-send"]}
+                        type="primary"
+                        onClick={() => doSubmit(userInput)}
+                      />
+                    )}
+                  </>
                 )}
-                <IconButton
-                  icon={<SendWhiteIcon />}
-                  text={Locale.Chat.Send}
-                  className={styles["chat-input-send"]}
-                  type="primary"
-                  onClick={() => doSubmit(userInput)}
-                />
               </label>
             </div>
           </div>

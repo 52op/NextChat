@@ -116,6 +116,11 @@ const cn = {
     TranscribeError: "语音转写失败，请重试",
     NoResult: "没有识别到内容，请重试",
     Unsupported: "当前浏览器不支持语音输入",
+    HoldToTalk: "按住 说话",
+    Listening: "松开 结束",
+    Processing: "转写中…",
+    ToggleToVoice: "切换为语音输入",
+    ToggleToText: "切换为文字输入",
   },
   Export: {
     Title: "分享聊天记录",

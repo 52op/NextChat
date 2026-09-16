@@ -117,6 +117,11 @@ const en: LocaleType = {
     TranscribeError: "Transcription failed, please retry",
     NoResult: "No content recognized, please retry",
     Unsupported: "Voice input is not supported in this browser",
+    HoldToTalk: "Hold to talk",
+    Listening: "Release to finish",
+    Processing: "Transcribing…",
+    ToggleToVoice: "Switch to voice input",
+    ToggleToText: "Switch to text input",
   },
   Export: {
     Title: "Export Messages",

@@ -1,26 +1,73 @@
-.voice-input {
+.voice-mode-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 68px;
+  display: flex;
+}
+
+.voice-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 20px;
-  font-size: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   background-color: var(--white);
-  color: var(--black);
+  color: var(--third);
   border: var(--border-in-light);
-  padding: 4px 10px;
   box-shadow: var(--card-shadow);
-  height: 16px;
   cursor: pointer;
   user-select: none;
   transition: all ease 0.3s;
 
+  position: absolute;
+  right: 30px;
+  bottom: 32px;
+
   svg {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
   }
 
   &:hover {
     color: var(--primary);
+  }
+}
+
+@media only screen and (max-width: 600px) {
+  .voice-toggle {
+    bottom: 30px;
+  }
+}
+
+.hold-to-talk {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 68px;
+  height: 100%;
+  border-radius: 10px;
+  border: var(--border-in-light);
+  background-color: var(--white);
+  color: var(--third);
+  font-size: 14px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: all ease 0.3s;
+
+  svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  &:hover {
+    border-color: var(--primary);
   }
 
   &.recording {
@@ -37,6 +84,6 @@
     transform: scale(1);
   }
   50% {
-    transform: scale(1.12);
+    transform: scale(1.02);
   }
 }
