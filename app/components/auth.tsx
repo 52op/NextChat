@@ -162,6 +162,7 @@ function TopBanner() {
   return (
     <div
       className={styles["top-banner"]}
+      style={{ display: "none" }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >

@@ -836,6 +836,7 @@ export function ChatActions(props: {
         {!isMobileScreen && <MCPAction />}
       </>
       <div className={styles["chat-input-actions-end"]}>
+        <VoiceInput onResult={props.setUserInput} />
         {config.realtimeConfig.enable && (
           <ChatAction
             onClick={() => props.setShowChatSidePanel(true)}
@@ -2117,7 +2118,6 @@ function _Chat() {
                     })}
                   </div>
                 )}
-                <VoiceInput onResult={(text) => setUserInput(text)} />
                 <IconButton
                   icon={<SendWhiteIcon />}
                   text={Locale.Chat.Send}

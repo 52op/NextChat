@@ -1,32 +1,32 @@
 .voice-input {
-  position: absolute;
-  right: 92px;
-  bottom: 36px;
-  width: 28px;
-  height: 28px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  border-radius: 20px;
+  font-size: 12px;
+  background-color: var(--white);
+  color: var(--black);
+  border: var(--border-in-light);
+  padding: 4px 10px;
+  box-shadow: var(--card-shadow);
+  height: 16px;
   cursor: pointer;
-  border-radius: 50%;
-  color: var(--third);
-  opacity: 0.75;
   user-select: none;
+  transition: all ease 0.3s;
 
   svg {
-    width: 20px;
-    height: 20px;
+    width: 16px;
+    height: 16px;
   }
 
   &:hover {
-    opacity: 1;
     color: var(--primary);
   }
 
   &.recording {
     color: white;
     background-color: var(--danger);
-    opacity: 1;
+    border-color: var(--danger);
     animation: pulse 1.2s ease-in-out infinite;
   }
 }
@@ -38,11 +38,5 @@
   }
   50% {
     transform: scale(1.12);
-  }
-}
-
-@media only screen and (max-width: 600px) {
-  .voice-input {
-    bottom: 34px;
   }
 }
