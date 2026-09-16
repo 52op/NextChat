@@ -98,6 +98,31 @@ export interface VoiceActivity {
 }
 
 /**
+ * Divide the buffer into `bins` equal windows and return each window's RMS.
+ * A 40-bin RMS envelope of a real 3-4s sentence shows the word-by-word energy
+ * pattern (bursts with quiet gaps); a uniform block of hum/tone or padding
+ * shows flat. Cheap waveform-shape fingerprint for remote debugging.
+ */
+export function pcmEnvelope(pcm: Uint8Array, bins = 40): number[] {
+  const view = new Int16Array(pcm.buffer);
+  const n = view.length;
+  if (n === 0) return new Array(bins).fill(0);
+  const out: number[] = [];
+  const perBin = n / bins;
+  for (let b = 0; b < bins; b++) {
+    const start = Math.floor(b * perBin);
+    const end = Math.min(n, Math.floor((b + 1) * perBin));
+    let sumSq = 0;
+    for (let i = start; i < end; i++) {
+      const v = view[i];
+      sumSq += v * v;
+    }
+    out.push(end > start ? Math.round(Math.sqrt(sumSq / (end - start))) : 0);
+  }
+  return out;
+}
+
+/**
  * Where the speech actually sits in the buffer. A MediaRecorder blob decoded
  * to a 5s buffer can contain only ~1s of real voice padded out with near-zero
  * samples; knowing how much of the window is active and where it starts/ends

@@ -235,6 +235,14 @@ class MediaRecorderRecorder {
       const samples = audioBuffer.getChannelData(0);
       if (samples.length === 0) return new Uint8Array(0);
       const pcm = resampleTo16kPcm(samples, srcRate);
+      // always print a 40-bin RMS envelope so the waveform shape can be
+      // inspected without needing a file download (PWA blocks a.click())
+      try {
+        const { pcmEnvelope } = await import("../utils/pcm-resample");
+        console.log("[VoiceInput] env " + pcmEnvelope(pcm).join(","));
+      } catch {
+        /* noop */
+      }
       // set localStorage voiceDownloadDebug=1 to download the 16k wav for
       // local spectrum / ASR replay debugging
       try {
@@ -250,8 +258,12 @@ class MediaRecorderRecorder {
           const a = document.createElement("a");
           a.href = url;
           a.download = `voice-${Date.now()}.wav`;
+          document.body.appendChild(a);
           a.click();
-          URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          // don't revoke immediately: browsers can fail the download if the
+          // object URL is freed before the fetch starts
+          setTimeout(() => URL.revokeObjectURL(url), 3000);
         }
       } catch {
         /* noop */

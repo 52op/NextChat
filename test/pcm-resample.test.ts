@@ -2,6 +2,7 @@ import {
   isPcmSilent,
   normalizeGain,
   pcmDiagnostics,
+  pcmEnvelope,
   pcmToWav16k,
   resampleTo16kPcm,
   voiceActivity,
@@ -149,5 +150,22 @@ describe("pcmToWav16k", () => {
     for (let i = 0; i < pcm.length; i++) {
       expect(wav[44 + i]).toBe(pcm[i]);
     }
+  });
+});
+
+describe("pcmEnvelope", () => {
+  test("loud window reports high rms, quiet window low", () => {
+    const buf = new Int16Array(16000 * 2); // 2s
+    for (let i = 0; i < 8000; i++) buf[i] = 20000; // first 0.5s loud
+    const env = pcmEnvelope(new Uint8Array(buf.buffer), 40);
+    expect(env[0]).toBeGreaterThan(10000);
+    expect(env[30]).toBeLessThan(100); // silence long after the loud pass
+    expect(env.length).toBe(40);
+  });
+
+  test("flat tone -> all bins similar", () => {
+    const buf = new Int16Array(16000).fill(8000);
+    const env = pcmEnvelope(new Uint8Array(buf.buffer), 4);
+    for (const v of env) expect(v).toBeCloseTo(8000, 0);
   });
 });
