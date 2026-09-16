@@ -9,8 +9,10 @@ export const ASR_CHUNK_BYTES = 1280;
 export const ASR_CHUNK_INTERVAL_MS = 40;
 export const ASR_SAMPLE_RATE = 16000;
 // after the end marker the server normally answers with the tail results and
-// closes the socket; if it stays open we stop waiting after this grace period
-export const ASR_FLUSH_TIMEOUT_MS = 4000;
+// closes the socket; if it stays open we stop waiting after this grace period.
+// was 4000ms but real iflytek occasionally took longer to emit the empty final
+// for non-speech audio, racing our close and yielding resultCount:0
+export const ASR_FLUSH_TIMEOUT_MS = 8000;
 
 export interface IflytekAsrConfig {
   appId: string;
