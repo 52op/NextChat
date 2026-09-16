@@ -8,6 +8,9 @@ export const ASR_WS_URL =
 export const ASR_CHUNK_BYTES = 1280;
 export const ASR_CHUNK_INTERVAL_MS = 40;
 export const ASR_SAMPLE_RATE = 16000;
+// after the end marker the server normally answers with the tail results and
+// closes the socket; if it stays open we stop waiting after this grace period
+export const ASR_FLUSH_TIMEOUT_MS = 4000;
 
 export interface IflytekAsrConfig {
   appId: string;
@@ -119,25 +122,37 @@ export async function transcribePcm(
     let pcmOffset = 0;
     // aggregate only final segments (type=0), keyed by seg_id
     const finalSegments = new Map<number, string>();
-    let handshakeSessionId = "";
+    // the end marker carries a sessionId; the handshake may not provide one, so
+    // keep a client generated uuid as a fallback (community implementations
+    // send a self generated session id)
+    let sessionId = crypto.randomUUID();
     let finished = false;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
     const failTimer = setTimeout(() => {
-      if (!finished) {
-        finished = true;
-        try {
-          ws.close();
-        } catch {
-          /* noop */
-        }
-        reject(new Error("ASR timeout"));
+      if (finished) return;
+      // hard timeout: never drop text that was already recognized, only report
+      // an error when nothing usable arrived
+      if (finalSegments.size > 0) {
+        finish();
+        return;
       }
+      finished = true;
+      clearInterval(sendTimer);
+      try {
+        ws.close();
+      } catch {
+        /* noop */
+      }
+      reject(new Error("ASR timeout"));
     }, timeoutMs);
 
     const finish = (err?: Error) => {
       if (finished) return;
       finished = true;
       clearTimeout(failTimer);
+      if (flushTimer) clearTimeout(flushTimer);
+      clearInterval(sendTimer);
       try {
         ws.close();
       } catch {
@@ -157,8 +172,13 @@ export async function transcribePcm(
       if (ws.readyState !== WebSocket.OPEN) return;
       if (sentEnd) return;
       if (pcmOffset >= pcm.length) {
-        ws.send(JSON.stringify({ end: true, sessionId: handshakeSessionId }));
+        ws.send(JSON.stringify({ end: true, sessionId }));
         sentEnd = true;
+        // the server may keep the socket open after the end marker: give it a
+        // short grace period and then return what we already have
+        flushTimer = setTimeout(() => {
+          if (finalSegments.size > 0) finish();
+        }, ASR_FLUSH_TIMEOUT_MS);
         return;
       }
       const end = Math.min(pcmOffset + ASR_CHUNK_BYTES, pcm.length);
@@ -181,7 +201,8 @@ export async function transcribePcm(
       if (msg.msg_type === "action") {
         const d = msg.data || {};
         if (d.action === "started") {
-          handshakeSessionId = d.sessionId || "";
+          // prefer the server provided session id, fall back to the client one
+          sessionId = d.sessionId || sessionId;
         } else if (d.action === "error") {
           clearInterval(sendTimer);
           const code = String(d.code ?? "");

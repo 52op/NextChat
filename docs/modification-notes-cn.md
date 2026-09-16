@@ -197,6 +197,25 @@ serverSyncProvider: serverConfig.serverSync.provider,
 ### 21. `test/iflytek-asr.test.ts`（新增）
 - 签名确定性、参数完整性、WS URL 构造、UTC 时区格式。
 
+## 2026-09-16 语音输入可靠性修复（第二轮）
+
+线上排查发现「加了语音输入但用不了」的两类原因，已修复：
+
+1. **引擎被判定成 Web Speech 兜底**：部署的 `/api/config` 未下发 `enableIflytekAsr`（旧部署/未配 `IFLYTEK_ASR_*`）时，`detectVoiceEngine()` 只能回退浏览器原生识别，国内 Chrome/Edge 走 Google 服务必然失败。排查方式：Console 看 `[Config] got config from server` 是否含 `enableIflytekAsr: true`。
+2. **切模式瞬间释放预授权麦克风流**（`app/components/chat.tsx`）：原来文字/语音两种模式渲染的是**两个不同的 `VoiceInputBar` 实例**，切到语音模式时旧实例卸载 → 卸载 cleanup 调 `releaseVoiceRecorder()` → 刚 `prepareVoiceRecorder()` 拿到的 stream 立刻被停掉，预授权形同虚设，每次长按都要重新 `getUserMedia`（iOS / standalone PWA 直接失败）。
+   - 修法：只挂载**一个** `VoiceInputBar`，由 `voiceMode` 决定内部渲染切换按钮还是按住说话条；textarea/发送键在 `!voiceMode` 时渲染。`chat.tsx` 不再需要 `useVoiceEngine()`。
+3. **`app/components/voice-input.tsx`**
+   - 麦克风未就绪就松手（轻点/短按）原来**静默无反馈** → 现在提示 `Locale.VoiceInput.TooShort`（此前表现为「点了没反应」）。
+   - ASR 请求强制携带 `Authorization`：`getHeaders()` 会按当前聊天模型把凭据放进 `api-key` / `x-api-key` / `x-goog-api-key`，而 `/api/iflytek/asr` 只读 `Authorization`，切到 Azure/Claude/Gemini 模型时会 401 `empty access code`；现在缺省时补 `Bearer nk-<accessCode>`。
+   - 文字模式的切换按钮加 `onMouseDown` preventDefault，避免点击时聚焦 textarea、移动端弹键盘（**注意不要**在 touchstart 上 preventDefault，会抑制 click）。
+4. **`app/components/voice-input.module.scss`**：补 `&.starting` 样式（麦克风 arm 中要有视觉反馈，之前 `clsx(styles["starting"])` 恒为 undefined）。
+5. **`app/utils/iflytek-asr.ts`**（服务端转写健壮性）
+   - 结束包 `{"end":true,"sessionId"}` 的 sessionId 兜底：握手没给 `data.sessionId` 时用 `crypto.randomUUID()`（此前会发空 sessionId）。
+   - 新增收尾宽限 `ASR_FLUSH_TIMEOUT_MS=4000`：发完 end 后若服务端既不回 `ls=true` 也不断连，宽限期到点用已聚合结果 resolve（此前要等 50s 硬超时且**直接 reject**，已识别到的文字全丢，用户只看到「语音转写失败」）。
+   - 硬超时改为优先返回已识别文本，仅在完全没有结果时才 reject。
+6. **`test/iflytek-asr-transcribe.test.ts`（新增）**：用 `jest.unstable_mockModule("ws")` 造假的讯飞服务端，覆盖 4 条路径：收尾宽限返回、缺 sessionId 兜底、硬超时返回已有文本、无结果超时报错。
+   - 注意：本仓库测试以**原生 ESM** 运行（`extensionsToTreatAsEsm` + `--experimental-vm-modules`），`jest.mock` 不会被提升，写模块 mock 必须用 `jest.unstable_mockModule` + 动态 `import()`；`jest` 需从 `@jest/globals` 导入。
+
 ## 上游同步后的重打流程
 
 1. `git fetch upstream && git merge upstream/main`（或 rebase）。

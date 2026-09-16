@@ -48,7 +48,7 @@ import PluginIcon from "../icons/plugin.svg";
 import ShortcutkeyIcon from "../icons/shortcutkey.svg";
 import McpToolIcon from "../icons/tool.svg";
 import HeadphoneIcon from "../icons/headphone.svg";
-import { VoiceInputBar, useVoiceEngine } from "./voice-input";
+import { VoiceInputBar } from "./voice-input";
 import {
   BOT_HELLO,
   ChatMessage,
@@ -1001,7 +1001,6 @@ function _Chat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [userInput, setUserInput] = useState("");
   const [voiceMode, setVoiceMode] = useState(false);
-  const voiceEngine = useVoiceEngine();
   const [isLoading, setIsLoading] = useState(false);
   const { submitKey, shouldSubmit } = useSubmitHandler();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -2074,31 +2073,28 @@ function _Chat() {
               <label
                 className={clsx(styles["chat-input-panel-inner"], {
                   [styles["chat-input-panel-inner-attach"]]:
-                    attachImages.length !== 0,
+                    attachImages.length !== 0 && !voiceMode,
                 })}
                 htmlFor={voiceMode ? undefined : "chat-input"}
               >
-                {voiceMode ? (
-                  <VoiceInputBar
-                    voiceMode
-                    onResult={(text) => {
-                      setUserInput(text);
-                      setVoiceMode(false);
-                      if (text) {
-                        inputRef.current?.focus();
-                      }
-                    }}
-                    onToggleMode={() => setVoiceMode(false)}
-                  />
-                ) : (
+                {/* Keep ONE VoiceInputBar mounted for both modes: switching modes
+                    must not unmount it, otherwise the unmount cleanup releases
+                    the pre-authorized mic stream that entering voice mode just
+                    obtained (that made "hold to talk" re-request the mic on
+                    every press, which breaks iOS / standalone PWA). */}
+                <VoiceInputBar
+                  voiceMode={voiceMode}
+                  onResult={(text) => {
+                    setUserInput(text);
+                    setVoiceMode(false);
+                    if (text) {
+                      inputRef.current?.focus();
+                    }
+                  }}
+                  onModeChange={setVoiceMode}
+                />
+                {!voiceMode && (
                   <>
-                    {voiceEngine !== "none" && (
-                      <VoiceInputBar
-                        voiceMode={false}
-                        onResult={(text) => setUserInput(text)}
-                        onToggleMode={() => setVoiceMode(true)}
-                      />
-                    )}
                     <textarea
                       id="chat-input"
                       ref={inputRef}

@@ -6,6 +6,7 @@ import VoiceIcon from "../icons/voice.svg";
 import LoadingIcon from "../icons/loading.svg";
 import { useAccessStore } from "../store/access";
 import { getHeaders } from "../client/api";
+import { ACCESS_CODE_PREFIX } from "../constant";
 import { showToast } from "./ui-lib";
 import Locale from "../locales";
 import clsx from "clsx";
@@ -49,33 +50,36 @@ export function useVoiceEngine(): VoiceEngine {
 }
 
 /**
- * PCM recorder for the voice input.
+ * Mic permission + MediaRecorder for voice input.
  *
- * iOS Safari gotchas (researched, see WebKit bug #215884 + AudioContext
- * unlock articles):
- * 1. A page is limited to ~4 AudioContext instances and the unlocked state
- *    is NOT inherited by new instances -> reuse ONE context.
- * 2. The context re-locks after a few seconds (iOS 18.x) -> resume() must be
- *    called inside every user gesture (we call it first thing in start()).
- * 3. In standalone PWA mode iOS revokes the mic permission when the URL hash
- *    changes (NextChat uses a hash router) -> we pre-authorize the mic when
- *    the user taps the voice toggle (a gesture) and keep the stream alive,
- *    so holding to talk never re-triggers the permission prompt.
- * 4. ScriptProcessorNode is used (not AudioWorklet) because it works on all
- *    browsers including iOS Safari; record at the context rate and resample
- *    to 16k later.
+ * We record with the MediaRecorder API instead of a ScriptProcessorNode /
+ * AudioContext graph. MediaRecorder feeds real microphone frames straight to
+ * the browser's encoder (webm/opus), while the Web Audio approach depended on
+ * the AudioContext being unlocked and correctly routing the mic stream through
+ * a processor graph — on iOS Safari and Android Chrome the graph silently
+ * produced near-silent buffers, which the silence check let through and the
+ * ASR could not transcribe ("no content recognized").
+ *
+ * Recording: MediaRecorder -> webm blob -> AudioContext.decodeAudioData ->
+ * Float32Array at the context sample rate -> resampleTo16kPcm -> POST to
+ * /api/iflytek/asr.
+ *
+ * iOS standalone PWA notes (WebKit bug #215884): the mic permission is revoked
+ * every time the URL hash changes (NextChat uses a hash router), so we
+ * pre-authorize the mic inside the toggle gesture and keep the stream alive,
+ * so holding to talk never has to re-trigger the permission prompt.
  */
-let sharedContext: AudioContext | null = null;
 let sharedStream: MediaStream | null = null;
+let decoderContext: AudioContext | null = null;
 
-function getSharedContext(): AudioContext | null {
+function getDecoderContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
-  if (!sharedContext) {
+  if (!decoderContext) {
     const Ctor = window.AudioContext || (window as any).webkitAudioContext;
     if (!Ctor) return null;
-    sharedContext = new Ctor();
+    decoderContext = new Ctor();
   }
-  return sharedContext;
+  return decoderContext;
 }
 
 function releaseSharedStream() {
@@ -91,15 +95,6 @@ function releaseSharedStream() {
  */
 export async function prepareVoiceRecorder(): Promise<void> {
   if (sharedStream) return;
-  const ctx = getSharedContext();
-  if (!ctx) return;
-  try {
-    if (ctx.state !== "running") {
-      await ctx.resume();
-    }
-  } catch (e) {
-    console.warn("[VoiceInput] prepare resume failed", e);
-  }
   try {
     sharedStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -115,7 +110,7 @@ export async function prepareVoiceRecorder(): Promise<void> {
 
 export function releaseVoiceRecorder(): void {
   releaseSharedStream();
-  // do not close the context: keep it unlocked for the session
+  // keep the decoder context around for the session
 }
 
 /**
@@ -132,30 +127,13 @@ export function isStandalonePwa(): boolean {
   );
 }
 
-class PcmRecorder {
-  private context: AudioContext | null = null;
-  private processor: ScriptProcessorNode | null = null;
-  private source: MediaStreamAudioSourceNode | null = null;
-  private chunks: Float32Array[] = [];
+class MediaRecorderRecorder {
+  private stream: MediaStream | null = null;
+  private recorder: MediaRecorder | null = null;
+  private chunks: Blob[] = [];
 
   async start(): Promise<void> {
     this.chunks = [];
-    const ctx = getSharedContext();
-    if (!ctx) {
-      throw new Error("Web Audio API is not supported");
-    }
-    this.context = ctx;
-
-    // resume within the current user gesture (touchstart). iOS re-locks the
-    // context shortly after unlock, so this must happen on every press.
-    try {
-      if (ctx.state !== "running") {
-        await ctx.resume();
-      }
-    } catch (e) {
-      console.warn("[VoiceInput] audio context resume failed", e);
-    }
-
     // reuse the pre-authorized stream; if it is gone, request it now
     // (still inside the gesture, so the prompt is allowed)
     if (!sharedStream) {
@@ -171,72 +149,89 @@ class PcmRecorder {
         throw e;
       }
     }
-
-    // resume again after the (possibly async) mic request
-    if (ctx.state !== "running") {
-      try {
-        await ctx.resume();
-      } catch {
-        /* ignore */
-      }
+    if (typeof MediaRecorder === "undefined") {
+      throw new Error("MediaRecorder is not supported");
     }
-
-    this.source = ctx.createMediaStreamSource(sharedStream);
-    this.processor = ctx.createScriptProcessor(4096, 1, 1);
-    this.processor.onaudioprocess = (e) => {
-      const data = e.inputBuffer.getChannelData(0);
-      // copy, the underlying buffer is reused
-      this.chunks.push(new Float32Array(data));
-    };
-    this.source.connect(this.processor);
-    // must be connected to destination or the callback stops firing on some
-    // browsers (webkit), a zero gain keeps it silent
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-    this.processor.connect(gain);
-    gain.connect(ctx.destination);
+    this.stream = sharedStream;
+    this.recorder = new MediaRecorder(sharedStream);
+    this.recorder.addEventListener("dataavailable", (e) => {
+      if (e.data && e.data.size > 0) this.chunks.push(e.data);
+    });
+    this.recorder.start();
   }
 
   get isRecording(): boolean {
-    return !!this.processor && this.chunks.length > 0;
+    return this.recorder?.state === "recording";
   }
 
-  stop(): Uint8Array {
-    this.teardown();
-    return this.toPcm16k();
-  }
+  /** stop and convert the recorded blob to 16k mono s16 PCM */
+  async stop(): Promise<Uint8Array> {
+    const recorder = this.recorder;
+    this.recorder = null;
+    this.stream = null;
+    if (!recorder) return new Uint8Array(0);
 
-  /** stop the graph but keep the shared context + stream for the next press */
-  cancel(): void {
+    // if the recorder already finished on its own, the "stop" event cannot
+    // fire again, so never wrap it in a promise that waits for that event
+    let blob: Blob;
+    if (recorder.state === "inactive") {
+      blob = new Blob(this.chunks, { type: recorder.mimeType || "audio/mp4" });
+    } else {
+      const blobPromise = new Promise<Blob>((resolve) => {
+        recorder.addEventListener(
+          "stop",
+          () => {
+            resolve(
+              new Blob(this.chunks, {
+                type: recorder.mimeType || "audio/mp4",
+              }),
+            );
+          },
+          { once: true },
+        );
+      });
+      recorder.stop();
+      blob = await blobPromise;
+    }
     this.chunks = [];
-    this.teardown();
+
+    const ctx = getDecoderContext();
+    if (!ctx) return new Uint8Array(0);
+    try {
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      const srcRate = audioBuffer.sampleRate || 48000;
+      const samples = audioBuffer.getChannelData(0);
+      if (samples.length === 0) return new Uint8Array(0);
+      return resampleTo16kPcm(samples, srcRate);
+    } catch (e) {
+      console.warn("[VoiceInput] decodeAudioData failed", e);
+      throw new Error("failed to decode recorded audio");
+    }
   }
 
-  private teardown() {
+  /** stop the recorder and drop the data */
+  cancel(): void {
     try {
-      this.processor?.disconnect();
-      this.source?.disconnect();
+      this.recorder?.stop();
     } catch {
       /* noop */
     }
-    this.processor = null;
-    this.source = null;
-  }
-
-  private toPcm16k(): Uint8Array {
-    const srcRate = this.context?.sampleRate || 48000;
-    const total = this.chunks.reduce((sum, c) => sum + c.length, 0);
-    if (total === 0) return new Uint8Array(0);
-
-    const all = new Float32Array(total);
-    let offset = 0;
-    for (const chunk of this.chunks) {
-      all.set(chunk, offset);
-      offset += chunk.length;
-    }
+    this.recorder = null;
+    this.stream = null;
     this.chunks = [];
-    return resampleTo16kPcm(all, srcRate);
   }
+}
+
+/** animated waveform bars shown next to the label while recording */
+function Waveform() {
+  return (
+    <span className={styles["waveform"]} aria-hidden>
+      {Array.from({ length: 5 }, (_, i) => (
+        <span key={i} />
+      ))}
+    </span>
+  );
 }
 
 interface VoiceInputBarProps {
@@ -244,8 +239,10 @@ interface VoiceInputBarProps {
   onResult: (text: string) => void;
   // current mode
   voiceMode: boolean;
-  // called when the user toggles the mode (mic <-> keyboard button)
-  onToggleMode: () => void;
+  // called when the user switches between text and voice mode.
+  // Idempotent: it receives the target mode so rapid repeated clicks cannot
+  // flip the state back and forth.
+  onModeChange: (voiceMode: boolean) => void;
   // called when recording state changes (to style the container)
   onRecordingChange?: (recording: boolean) => void;
 }
@@ -259,7 +256,7 @@ interface VoiceInputBarProps {
 export function VoiceInputBar({
   onResult,
   voiceMode,
-  onToggleMode,
+  onModeChange,
   onRecordingChange,
 }: VoiceInputBarProps) {
   const engine = useVoiceEngine();
@@ -267,7 +264,7 @@ export function VoiceInputBar({
   const [processing, setProcessing] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const recorderRef = useRef<PcmRecorder | null>(null);
+  const recorderRef = useRef<MediaRecorderRecorder | null>(null);
   const recognitionRef = useRef<any>(null);
   // whether the user is currently pressing the hold-to-talk surface
   const pressedRef = useRef(false);
@@ -315,7 +312,7 @@ export function VoiceInputBar({
   const handleEnterVoiceMode = useCallback(async () => {
     try {
       await prepareVoiceRecorder();
-      onToggleMode();
+      onModeChange(true);
     } catch (e) {
       console.warn("[VoiceInput] prepare failed", e);
       showToast(
@@ -324,16 +321,16 @@ export function VoiceInputBar({
           : Locale.VoiceInput.MicError,
       );
     }
-  }, [onToggleMode]);
+  }, [onModeChange]);
 
   const handleExitVoiceMode = useCallback(() => {
     releaseVoiceRecorder();
-    onToggleMode();
-  }, [onToggleMode]);
+    onModeChange(false);
+  }, [onModeChange]);
 
   const startIflytek = useCallback(async () => {
     setStarting(true);
-    const recorder = new PcmRecorder();
+    const recorder = new MediaRecorderRecorder();
     recorderRef.current = recorder;
     armedRef.current = false;
     try {
@@ -365,35 +362,50 @@ export function VoiceInputBar({
     if (!recorder) return;
 
     // released before the recorder was ready: the async start already
-    // cancelled itself, nothing to transcribe
+    // cancelled itself, nothing to transcribe. Tell the user instead of
+    // failing silently (a quick tap used to look like "nothing happens").
     if (!armedRef.current) {
       armedRef.current = false;
+      showToast(Locale.VoiceInput.TooShort);
       return;
     }
     armedRef.current = false;
 
     setProcessing(true);
     try {
-      const pcm = recorder.stop();
+      const pcm = await recorder.stop();
       // 3200 bytes = 100ms at 16k mono 16bit
       if (pcm.length < 3200) {
         showToast(Locale.VoiceInput.TooShort);
         return;
       }
-      // if the audio graph was interrupted (e.g. iOS resume failure), the
-      // buffer has length but no voice; tell the user instead of transcribing
+      // if the recorded audio turned out silent, tell the user instead of
+      // transcribing noise
       if (isPcmSilent(pcm)) {
         console.warn("[VoiceInput] recorded audio is silent");
         showToast(Locale.VoiceInput.Silent);
         return;
       }
 
+      // /api/iflytek/asr only reads the Authorization header, while
+      // getHeaders() may put the credential into a provider specific header
+      // (api-key / x-api-key / x-goog-api-key) depending on the chat model the
+      // user is currently on. Make sure Authorization is always present.
+      const headers: Record<string, string> = {
+        ...getHeaders(),
+        "Content-Type": "application/octet-stream",
+      };
+      if (!headers["Authorization"]) {
+        const accessCode = useAccessStore.getState().accessCode;
+        if (accessCode) {
+          headers["Authorization"] =
+            "Bearer " + ACCESS_CODE_PREFIX + accessCode;
+        }
+      }
+
       const res = await fetch("/api/iflytek/asr", {
         method: "POST",
-        headers: {
-          ...getHeaders(),
-          "Content-Type": "application/octet-stream",
-        },
+        headers,
         body: pcm,
       });
       const json = await res.json();
@@ -586,7 +598,13 @@ export function VoiceInputBar({
           onMouseLeave={handleMouseLeave}
         >
           <span className={styles["hold-to-talk-icon"]}>
-            {processing || starting ? <LoadingIcon /> : <VoiceIcon />}
+            {recording ? (
+              <Waveform />
+            ) : processing || starting ? (
+              <LoadingIcon />
+            ) : (
+              <VoiceIcon />
+            )}
           </span>
           <span className={styles["hold-to-talk-text"]}>
             {processing
@@ -606,6 +624,11 @@ export function VoiceInputBar({
       className={styles["voice-mode-toggle"]}
       title={Locale.VoiceInput.ToggleToVoice}
       data-testid="voice-toggle"
+      // the toggle lives inside the <label htmlFor="chat-input"> wrapper: keep
+      // the click from focusing the textarea / popping the mobile keyboard.
+      // NOTE: only intercept mousedown here, preventDefault on touchstart can
+      // suppress the synthesized click on mobile and break the toggle.
+      onMouseDown={(e) => e.preventDefault()}
       onClick={handleEnterVoiceMode}
     >
       <VoiceIcon />
