@@ -439,7 +439,8 @@ export function VoiceInputBar({
       if (text) {
         onResult(text);
       } else {
-        showToast(json.debug || Locale.VoiceInput.NoResult);
+        console.log("[VoiceInput] ASR empty result", json.debug ?? "");
+        showToast(Locale.VoiceInput.NoResult);
       }
     } catch (e) {
       console.error("[VoiceInput] iflytek failed", e);
