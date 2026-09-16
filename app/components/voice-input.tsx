@@ -216,6 +216,14 @@ class MediaRecorderRecorder {
       recorder.stop();
       blob = await blobPromise;
     }
+    console.log(
+      "[VoiceInput] chunks=" +
+        this.chunks.length +
+        " blobBytes=" +
+        blob.size +
+        " mime=" +
+        blob.type,
+    );
     this.chunks = [];
 
     const ctx = getDecoderContext();
