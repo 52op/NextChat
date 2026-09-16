@@ -7,6 +7,7 @@ import {
   isPcmSilent,
   normalizeGain,
   pcmDiagnostics,
+  pcmToWav16k,
   voiceActivity,
 } from "@/app/utils/pcm-resample";
 
@@ -94,6 +95,12 @@ async function handle(req: NextRequest) {
     console.log("[Iflytek ASR] out=" + JSON.stringify(text));
     const diagOut = pcmDiagnostics(normalized);
     const act = voiceActivity(pcm);
+    if (!text) {
+      console.log(
+        "[Iflytek ASR] empty result, serving debug wav base64",
+        pcm.length,
+      );
+    }
     return NextResponse.json({
       text,
       debug: `进包${diag.frameCount}采样/${diag.durationSec.toFixed(1)}s 峰值${
@@ -103,6 +110,9 @@ async function handle(req: NextRequest) {
       }(${act.percent}%) 语音${act.firstSec.toFixed(1)}-${act.lastSec.toFixed(
         1,
       )}s zcr${diag.zeroCrossRate.toFixed(0)} ws=${JSON.stringify(wsStat)}`,
+      wav: text
+        ? undefined
+        : Buffer.from(pcmToWav16k(pcm).buffer).toString("base64"),
     });
   } catch (e: any) {
     console.error("[Iflytek ASR]", e);

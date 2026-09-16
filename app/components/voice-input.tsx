@@ -501,6 +501,26 @@ export function VoiceInputBar({
         onResult(text);
       } else {
         console.log("[VoiceInput] ASR empty result", json.debug ?? "");
+        // keep a copy of the exact audio the server heard so we can feed the
+        // same bytes to iflytek locally and separate engine/content from
+        // transport/vercel (json.wav is a base64 16k wav, only sent on empty)
+        if (json.wav) {
+          const link = document.createElement("a");
+          link.href = "data:audio/wav;base64," + json.wav;
+          link.download = "asr-empty.wav";
+          console.log(
+            "[VoiceInput] empty wav base64 (" +
+              Math.round(json.wav.length * 0.75) +
+              " bytes): " +
+              json.wav,
+          );
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(() => {
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+          }, 3000);
+        }
         showToast(Locale.VoiceInput.NoResult);
       }
     } catch (e) {
