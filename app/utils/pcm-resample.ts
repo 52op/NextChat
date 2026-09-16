@@ -152,3 +152,26 @@ export function normalizeGain(pcm: Uint8Array, targetPeak = 30000): Uint8Array {
   }
   return new Uint8Array(out.buffer);
 }
+
+/** Wrap 16k mono s16 PCM into a WAV file for local inspection/playback. */
+export function pcmToWav16k(pcm: Uint8Array): Uint8Array {
+  const hdr = new Uint8Array(44);
+  const dv = new DataView(hdr.buffer);
+  dv.setUint32(0, 0x52494646, false); // "RIFF"
+  dv.setUint32(4, 36 + pcm.length, true);
+  dv.setUint32(8, 0x57415645, false); // "WAVE"
+  dv.setUint32(12, 0x666d7420, false); // "fmt "
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); // PCM
+  dv.setUint16(22, 1, true); // mono
+  dv.setUint32(24, 16000, true);
+  dv.setUint32(28, 16000 * 2, true); // byte rate
+  dv.setUint16(32, 2, true); // block align
+  dv.setUint16(34, 16, true); // bits
+  dv.setUint32(36, 0x64617461, false); // "data"
+  dv.setUint32(40, pcm.length, true);
+  const out = new Uint8Array(44 + pcm.length);
+  out.set(hdr, 0);
+  out.set(pcm, 44);
+  return out;
+}

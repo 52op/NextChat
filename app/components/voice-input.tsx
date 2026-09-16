@@ -234,7 +234,29 @@ class MediaRecorderRecorder {
       const srcRate = audioBuffer.sampleRate || 48000;
       const samples = audioBuffer.getChannelData(0);
       if (samples.length === 0) return new Uint8Array(0);
-      return resampleTo16kPcm(samples, srcRate);
+      const pcm = resampleTo16kPcm(samples, srcRate);
+      // set localStorage voiceDownloadDebug=1 to download the 16k wav for
+      // local spectrum / ASR replay debugging
+      try {
+        if (
+          typeof localStorage !== "undefined" &&
+          localStorage.getItem("voiceDownloadDebug")
+        ) {
+          const { pcmToWav16k } = await import("../utils/pcm-resample");
+          const wav = pcmToWav16k(pcm);
+          const url = URL.createObjectURL(
+            new Blob([wav], { type: "audio/wav" }),
+          );
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `voice-${Date.now()}.wav`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      } catch {
+        /* noop */
+      }
+      return pcm;
     } catch (e) {
       console.warn("[VoiceInput] decodeAudioData failed", e);
       throw new Error("failed to decode recorded audio");

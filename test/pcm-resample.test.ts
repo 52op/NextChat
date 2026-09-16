@@ -2,6 +2,7 @@ import {
   isPcmSilent,
   normalizeGain,
   pcmDiagnostics,
+  pcmToWav16k,
   resampleTo16kPcm,
   voiceActivity,
 } from "../app/utils/pcm-resample";
@@ -127,5 +128,26 @@ describe("voiceActivity", () => {
     const act = voiceActivity(pcmFromInt16(new Array(16000).fill(10)));
     expect(act.percent).toBe(0);
     expect(act.firstSec).toBe(0);
+  });
+});
+
+describe("pcmToWav16k", () => {
+  test("builds a valid wav header and copies pcm", () => {
+    const ascii = (u: Uint8Array, off: number, len: number) =>
+      String.fromCharCode(...u.subarray(off, off + len));
+    const pcm = pcmFromInt16([0, 1000, -1000, 32767, -32768]);
+    const wav = pcmToWav16k(pcm);
+    const dv = new DataView(wav.buffer);
+    expect(ascii(wav, 0, 4)).toBe("RIFF");
+    expect(dv.getUint32(4, true)).toBe(36 + pcm.length);
+    expect(ascii(wav, 8, 4)).toBe("WAVE");
+    expect(dv.getUint16(22, true)).toBe(1); // mono
+    expect(dv.getUint32(24, true)).toBe(16000);
+    expect(dv.getUint16(34, true)).toBe(16); // bits
+    expect(wav.length).toBe(44 + pcm.length);
+    // pcm payload preserved
+    for (let i = 0; i < pcm.length; i++) {
+      expect(wav[44 + i]).toBe(pcm[i]);
+    }
   });
 });
