@@ -3,6 +3,7 @@ import {
   normalizeGain,
   pcmDiagnostics,
   resampleTo16kPcm,
+  voiceActivity,
 } from "../app/utils/pcm-resample";
 
 function pcmFromInt16(values: number[]): Uint8Array {
@@ -102,5 +103,27 @@ describe("normalizeGain", () => {
   test("all-zero stays all-zero", () => {
     const pcm = pcmFromInt16(new Array(1600).fill(0));
     expect(normalizeGain(pcm, 30000)).toBe(pcm);
+  });
+});
+
+describe("voiceActivity", () => {
+  test("finds a speech island in the middle of padding", () => {
+    // 2s of silence, 1s of loud voice, 2s of silence at 16k
+    const buf = new Int16Array(16000 * 5);
+    const start = 16000 * 2;
+    for (let i = 0; i < 16000; i++) {
+      buf[start + i] = i % 2 === 0 ? 12000 : -12000;
+    }
+    const act = voiceActivity(new Uint8Array(buf.buffer));
+    expect(act.activeFrames).toBe(16000);
+    expect(act.percent).toBe(20);
+    expect(act.firstSec).toBeCloseTo(2);
+    expect(act.lastSec).toBeCloseTo(3);
+  });
+
+  test("all-silent reports no activity", () => {
+    const act = voiceActivity(pcmFromInt16(new Array(16000).fill(10)));
+    expect(act.percent).toBe(0);
+    expect(act.firstSec).toBe(0);
   });
 });

@@ -7,6 +7,7 @@ import {
   isPcmSilent,
   normalizeGain,
   pcmDiagnostics,
+  voiceActivity,
 } from "@/app/utils/pcm-resample";
 
 // vercel hobby: node runtime can run up to 60s
@@ -89,11 +90,16 @@ async function handle(req: NextRequest) {
     const text = await transcribePcm(serverConfig.iflytekAsr, normalized);
     console.log("[Iflytek ASR] out=" + JSON.stringify(text));
     const diagOut = pcmDiagnostics(normalized);
+    const act = voiceActivity(pcm);
     return NextResponse.json({
       text,
       debug: `进包${diag.frameCount}采样/${diag.durationSec.toFixed(1)}s 峰值${
         diag.peak
-      } rms${Math.round(diag.rms)} 后峰值${diagOut.peak}`,
+      } rms${Math.round(diag.rms)} 后峰值${diagOut.peak} 活动帧${
+        act.activeFrames
+      }(${act.percent}%) 语音${act.firstSec.toFixed(1)}-${act.lastSec.toFixed(
+        1,
+      )}s`,
     });
   } catch (e: any) {
     console.error("[Iflytek ASR]", e);

@@ -82,6 +82,44 @@ export function pcmDiagnostics(pcm: Uint8Array): PcmDiagnostics {
   };
 }
 
+export interface VoiceActivity {
+  activeFrames: number;
+  percent: number;
+  firstSec: number;
+  lastSec: number;
+}
+
+/**
+ * Where the speech actually sits in the buffer. A MediaRecorder blob decoded
+ * to a 5s buffer can contain only ~1s of real voice padded out with near-zero
+ * samples; knowing how much of the window is active and where it starts/ends
+ * tells us whether the recording is a sparse speech island (streaming ASR
+ * hates that) or continuous audio.
+ */
+export function voiceActivity(
+  pcm: Uint8Array,
+  peakThreshold = 500,
+): VoiceActivity {
+  const view = new Int16Array(pcm.buffer);
+  const n = view.length;
+  let activeFrames = 0;
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(view[i]) > peakThreshold) {
+      if (first < 0) first = i;
+      last = i;
+      activeFrames++;
+    }
+  }
+  return {
+    activeFrames,
+    percent: n === 0 ? 0 : Math.round((activeFrames / n) * 100),
+    firstSec: first < 0 ? 0 : first / 16000,
+    lastSec: last < 0 ? 0 : last / 16000,
+  };
+}
+
 /**
  * Normalize a s16 PCM buffer so its peak hits a healthy target for the ASR
  * server. Multiplied with a hard cap (never amplifies more than 20x, and never
