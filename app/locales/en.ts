@@ -113,6 +113,8 @@ const en: LocaleType = {
   VoiceInput: {
     Title: "Press and hold to talk, release to transcribe",
     MicError: "Cannot access microphone, please check permissions",
+    StandaloneMicError:
+      "Cannot access microphone. In PWA mode switching pages revokes the permission - please open the site directly in Safari/browser",
     TooShort: "Recording is too short, please speak again",
     Silent: "No sound detected, please check your microphone and retry",
     TranscribeError: "Transcription failed, please retry",

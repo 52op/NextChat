@@ -173,13 +173,20 @@ serverSyncProvider: serverConfig.serverSync.provider,
 - 新增 `getRecordedPcm(targetRate=16000)`：合并 recordBuffer → 线性重采样 → 返回裸 s16le PCM。
 
 ### 17. `app/components/voice-input.tsx`（新增）
-- 引擎检测：`enableIflytekAsr` → iflytek；否则 `SpeechRecognition || webkitSpeechRecognition` → web-speech；否则返回 null（隐藏按钮）。
-- 讯飞模式：`AudioHandler(16000)` 按住录音 → 松开 `getRecordedPcm()` → `fetch("/api/iflytek/asr")`，`getHeaders()` 带访问 Code → `onResult(text)` 填入输入框。
-- Web Speech 模式：`new SpeechRecognition()`，`lang="zh-CN"`，结果直接回调。
-- Pointer 事件：按下录音、松开转写、滑出取消。
+- 交互：文字模式在输入框左侧有麦克风切换按钮（保留发送键）；语音模式整个输入框变「按住说话」大按键，左侧键盘按钮切回。
+- 引擎：`enableIflytekAsr` → iflytek；否则 `SpeechRecognition || webkitSpeechRecognition` → web-speech；`useVoiceEngine()` 响应 `/api/config`。
+- 讯飞录音：**共享单例 AudioContext + 预授权 MediaStream**（`prepareVoiceRecorder`/`releaseVoiceRecorder`），点切换按钮进入语音模式时先手势内 `resume()` + `getUserMedia()` 完成授权，长按复用手势内 resume（不再每次 new context / 弹权限框）。
+- 移动端关键修复（网上核实）：
+  - iOS Safari 每页最多 ~4 个 AudioContext 且解锁状态不继承 → 复用单个 context。
+  - iOS 18.x AudioContext 解锁数秒后重新锁定 → 每次 touchstart 手势内 resume()。
+  - **iOS standalone PWA 每次 hash 变化吊销麦克风权限**（WebKit bug #215884，NextChat 用 HashRouter 踩中）→ 进入语音模式时预授权并持有 stream，退出才释放；失败时按 standalone 给出专项提示。
+  - ScriptProcessorNode（非 AudioWorklet）保证 iOS Safari 也能取到 PCM，录制后用浏览器原生采样率，事后 `resampleTo16kPcm` 到 16k。
+  - touch + mouse 事件（微信式）：`preventDefault` 阻止 iOS 文本选择/长按 callout；700ms 时间戳抑制 touch 后的合成 mouse 事件。
+  - `isPcmSilent` 峰值检测：静音直接提示「未检测到声音」，区分录音链路坏 vs 讯飞识别空。
+- Web Speech 兜底模式沿用。
 
 ### 18. `app/components/chat.tsx`
-- import `VoiceInput`，渲染于发送按钮之前（label 内），`onResult={(t) => setUserInput(t)}`。
+- `voiceMode` 状态 + `useVoiceEngine()`；文字模式渲染 `VoiceInputBar`（切换按钮）+ 发送键（保留）；语音模式渲染占满的 hold-to-talk 表面。`htmlFor` 在语音模式下置 undefined。
 
 ### 19. `app/locales/cn.ts` / `en.ts`
 - 顶层新增 `VoiceInput` 文案块（其他语言文件为 DeepPartial，可缺省）。

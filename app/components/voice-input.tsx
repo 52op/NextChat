@@ -49,48 +49,140 @@ export function useVoiceEngine(): VoiceEngine {
 }
 
 /**
- * Minimal PCM recorder for the voice input.
- * Uses ScriptProcessorNode because it is supported on every browser
- * including iOS Safari; AudioWorklet + custom sample rates are unreliable
- * on iOS. Records at the context rate and resamples to 16k later.
+ * PCM recorder for the voice input.
+ *
+ * iOS Safari gotchas (researched, see WebKit bug #215884 + AudioContext
+ * unlock articles):
+ * 1. A page is limited to ~4 AudioContext instances and the unlocked state
+ *    is NOT inherited by new instances -> reuse ONE context.
+ * 2. The context re-locks after a few seconds (iOS 18.x) -> resume() must be
+ *    called inside every user gesture (we call it first thing in start()).
+ * 3. In standalone PWA mode iOS revokes the mic permission when the URL hash
+ *    changes (NextChat uses a hash router) -> we pre-authorize the mic when
+ *    the user taps the voice toggle (a gesture) and keep the stream alive,
+ *    so holding to talk never re-triggers the permission prompt.
+ * 4. ScriptProcessorNode is used (not AudioWorklet) because it works on all
+ *    browsers including iOS Safari; record at the context rate and resample
+ *    to 16k later.
  */
-class PcmRecorder {
-  private context: AudioContext | null = null;
-  private processor: ScriptProcessorNode | null = null;
-  private source: MediaStreamAudioSourceNode | null = null;
-  private stream: MediaStream | null = null;
-  private chunks: Float32Array[] = [];
+let sharedContext: AudioContext | null = null;
+let sharedStream: MediaStream | null = null;
 
-  async start(): Promise<void> {
-    // don't force a sample rate: iOS only supports 44100/48000 and would
-    // silently fail. we record at the context rate and resample later.
-    this.context = new AudioContext();
-    // CRITICAL on iOS: resume() must be called inside the user gesture stack.
-    // awaiting getUserMedia first leaves the gesture context and the resume
-    // gets rejected, leaving the context suspended and onaudioprocess silent.
-    // resume is the first await so it runs synchronously within touchstart.
-    try {
-      await this.context.resume();
-    } catch (e) {
-      console.warn("[VoiceInput] audio context resume failed", e);
+function getSharedContext(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  if (!sharedContext) {
+    const Ctor = window.AudioContext || (window as any).webkitAudioContext;
+    if (!Ctor) return null;
+    sharedContext = new Ctor();
+  }
+  return sharedContext;
+}
+
+function releaseSharedStream() {
+  if (sharedStream) {
+    sharedStream.getTracks().forEach((track) => track.stop());
+    sharedStream = null;
+  }
+}
+
+/**
+ * Ask for mic permission ahead of time (inside a user gesture) so that
+ * holding to talk does not need to wait for / re-trigger the prompt.
+ */
+export async function prepareVoiceRecorder(): Promise<void> {
+  if (sharedStream) return;
+  const ctx = getSharedContext();
+  if (!ctx) return;
+  try {
+    if (ctx.state !== "running") {
+      await ctx.resume();
     }
-    this.stream = await navigator.mediaDevices.getUserMedia({
+  } catch (e) {
+    console.warn("[VoiceInput] prepare resume failed", e);
+  }
+  try {
+    sharedStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
       },
     });
-    // some browsers suspend again after the mic prompt; try once more
-    if (this.context.state !== "running") {
+  } catch (e) {
+    console.warn("[VoiceInput] prepare mic failed", e);
+    throw e;
+  }
+}
+
+export function releaseVoiceRecorder(): void {
+  releaseSharedStream();
+  // do not close the context: keep it unlocked for the session
+}
+
+/**
+ * Whether the app runs as an installed PWA (standalone display mode).
+ * iOS standalone has a known WebKit bug: the mic permission is revoked every
+ * time the URL hash changes (NextChat uses a hash router), so we show a hint
+ * when the mic cannot be prepared.
+ */
+export function isStandalonePwa(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+    (window.navigator as any).standalone === true
+  );
+}
+
+class PcmRecorder {
+  private context: AudioContext | null = null;
+  private processor: ScriptProcessorNode | null = null;
+  private source: MediaStreamAudioSourceNode | null = null;
+  private chunks: Float32Array[] = [];
+
+  async start(): Promise<void> {
+    this.chunks = [];
+    const ctx = getSharedContext();
+    if (!ctx) {
+      throw new Error("Web Audio API is not supported");
+    }
+    this.context = ctx;
+
+    // resume within the current user gesture (touchstart). iOS re-locks the
+    // context shortly after unlock, so this must happen on every press.
+    try {
+      if (ctx.state !== "running") {
+        await ctx.resume();
+      }
+    } catch (e) {
+      console.warn("[VoiceInput] audio context resume failed", e);
+    }
+
+    // reuse the pre-authorized stream; if it is gone, request it now
+    // (still inside the gesture, so the prompt is allowed)
+    if (!sharedStream) {
       try {
-        await this.context.resume();
+        sharedStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        });
+      } catch (e) {
+        console.warn("[VoiceInput] getUserMedia failed", e);
+        throw e;
+      }
+    }
+
+    // resume again after the (possibly async) mic request
+    if (ctx.state !== "running") {
+      try {
+        await ctx.resume();
       } catch {
         /* ignore */
       }
     }
 
-    this.source = this.context.createMediaStreamSource(this.stream);
-    this.processor = this.context.createScriptProcessor(4096, 1, 1);
+    this.source = ctx.createMediaStreamSource(sharedStream);
+    this.processor = ctx.createScriptProcessor(4096, 1, 1);
     this.processor.onaudioprocess = (e) => {
       const data = e.inputBuffer.getChannelData(0);
       // copy, the underlying buffer is reused
@@ -99,10 +191,10 @@ class PcmRecorder {
     this.source.connect(this.processor);
     // must be connected to destination or the callback stops firing on some
     // browsers (webkit), a zero gain keeps it silent
-    const gain = this.context.createGain();
+    const gain = ctx.createGain();
     gain.gain.value = 0;
     this.processor.connect(gain);
-    gain.connect(this.context.destination);
+    gain.connect(ctx.destination);
   }
 
   get isRecording(): boolean {
@@ -114,19 +206,10 @@ class PcmRecorder {
     return this.toPcm16k();
   }
 
-  async cancel(): Promise<void> {
+  /** stop the graph but keep the shared context + stream for the next press */
+  cancel(): void {
     this.chunks = [];
     this.teardown();
-    const ctx = this.context;
-    this.context = null;
-    if (ctx) {
-      try {
-        await ctx.close();
-      } catch (e) {
-        // already closed or suspended on iOS, ignore
-        console.warn("[VoiceInput] audio context close failed", e);
-      }
-    }
   }
 
   private teardown() {
@@ -136,10 +219,8 @@ class PcmRecorder {
     } catch {
       /* noop */
     }
-    this.stream?.getTracks().forEach((track) => track.stop());
     this.processor = null;
     this.source = null;
-    this.stream = null;
   }
 
   private toPcm16k(): Uint8Array {
@@ -205,6 +286,7 @@ export function VoiceInputBar({
     return () => {
       recorderRef.current?.cancel();
       recognitionRef.current?.abort?.();
+      releaseVoiceRecorder();
     };
   }, []);
 
@@ -220,9 +302,34 @@ export function VoiceInputBar({
       setStarting(false);
       setProcessing(false);
       updateRecording(false);
+      releaseVoiceRecorder();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
+
+  // enter / exit voice mode: pre-authorize the mic inside the toggle gesture
+  // (iOS standalone revokes permission on hash change, so we grab the stream
+  // up front and keep it for the whole voice session). We only enter voice
+  // mode AFTER the permission is granted, so holding to talk never has to
+  // race with a pending second getUserMedia call.
+  const handleEnterVoiceMode = useCallback(async () => {
+    try {
+      await prepareVoiceRecorder();
+      onToggleMode();
+    } catch (e) {
+      console.warn("[VoiceInput] prepare failed", e);
+      showToast(
+        isStandalonePwa()
+          ? Locale.VoiceInput.StandaloneMicError
+          : Locale.VoiceInput.MicError,
+      );
+    }
+  }, [onToggleMode]);
+
+  const handleExitVoiceMode = useCallback(() => {
+    releaseVoiceRecorder();
+    onToggleMode();
+  }, [onToggleMode]);
 
   const startIflytek = useCallback(async () => {
     setStarting(true);
@@ -233,7 +340,7 @@ export function VoiceInputBar({
       await recorder.start();
       // the user may have released the surface while the mic was arming
       if (!pressedRef.current) {
-        recorder.cancel().catch(() => {});
+        recorder.cancel();
         recorderRef.current = null;
         return;
       }
@@ -304,8 +411,7 @@ export function VoiceInputBar({
       console.error("[VoiceInput] iflytek failed", e);
       showToast(Locale.VoiceInput.TranscribeError);
     } finally {
-      // cancel can throw on iOS; never block the state reset
-      recorder.cancel().catch(() => {});
+      recorder.cancel();
       setProcessing(false);
       updateRecording(false);
     }
@@ -397,7 +503,6 @@ export function VoiceInputBar({
       setProcessing(false);
     }
   }, [engine, updateRecording]);
-
   const handleTouchStart = useCallback(
     (e: React.TouchEvent) => {
       e.preventDefault();
@@ -462,7 +567,7 @@ export function VoiceInputBar({
         <span
           className={styles["voice-mode-toggle"]}
           title={Locale.VoiceInput.ToggleToText}
-          onClick={onToggleMode}
+          onClick={handleExitVoiceMode}
         >
           <KeyboardIcon />
         </span>
@@ -501,7 +606,7 @@ export function VoiceInputBar({
       className={styles["voice-mode-toggle"]}
       title={Locale.VoiceInput.ToggleToVoice}
       data-testid="voice-toggle"
-      onClick={onToggleMode}
+      onClick={handleEnterVoiceMode}
     >
       <VoiceIcon />
     </span>

@@ -112,6 +112,8 @@ const cn = {
   VoiceInput: {
     Title: "按住说话，松开转写",
     MicError: "无法访问麦克风，请检查权限设置",
+    StandaloneMicError:
+      "无法访问麦克风。PWA 模式下切换页面会导致权限失效，请直接用 Safari/浏览器打开本站再试",
     TooShort: "录音太短，请再说一次",
     Silent: "没有检测到声音，请检查麦克风后再试",
     TranscribeError: "语音转写失败，请重试",
