@@ -119,7 +119,7 @@ describe("transcribePcm", () => {
 
     // no ls=true and no close from the server: the flush timer must resolve
     await jest.advanceTimersByTimeAsync(ASR_FLUSH_TIMEOUT_MS + 500);
-    await expect(promise).resolves.toBe("你好");
+    await expect(promise).resolves.toMatchObject({ text: "你好" });
   });
 
   test("falls back to a client session id when the handshake has none", async () => {
@@ -135,7 +135,7 @@ describe("transcribePcm", () => {
 
     MockWebSocket.instances[0].emit("message", finalResult(0, "测试"));
     await jest.advanceTimersByTimeAsync(ASR_FLUSH_TIMEOUT_MS + 500);
-    await expect(promise).resolves.toBe("测试");
+    await expect(promise).resolves.toMatchObject({ text: "测试" });
   });
 
   test("returns already recognized text on hard timeout instead of failing", async () => {
@@ -147,7 +147,7 @@ describe("transcribePcm", () => {
     // the hard timeout (1s) is shorter than the flush grace period (4s)
     await jest.advanceTimersByTimeAsync(1100);
 
-    await expect(promise).resolves.toBe("世界");
+    await expect(promise).resolves.toMatchObject({ text: "世界" });
   });
 
   test("rejects on timeout when nothing was recognized", async () => {

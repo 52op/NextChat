@@ -87,7 +87,10 @@ async function handle(req: NextRequest) {
     // only help (never attenuates), and it lets the whole test cycle tell us
     // whether a whisper-quiet recording was the problem
     const normalized = normalizeGain(pcm);
-    const text = await transcribePcm(serverConfig.iflytekAsr, normalized);
+    const { text, wsStat } = await transcribePcm(
+      serverConfig.iflytekAsr,
+      normalized,
+    );
     console.log("[Iflytek ASR] out=" + JSON.stringify(text));
     const diagOut = pcmDiagnostics(normalized);
     const act = voiceActivity(pcm);
@@ -99,7 +102,7 @@ async function handle(req: NextRequest) {
         act.activeFrames
       }(${act.percent}%) 语音${act.firstSec.toFixed(1)}-${act.lastSec.toFixed(
         1,
-      )}s zcr${diag.zeroCrossRate.toFixed(0)}`,
+      )}s zcr${diag.zeroCrossRate.toFixed(0)} ws=${JSON.stringify(wsStat)}`,
     });
   } catch (e: any) {
     console.error("[Iflytek ASR]", e);
