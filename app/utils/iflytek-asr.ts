@@ -129,6 +129,13 @@ export async function transcribePcm(
     let finished = false;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+    // what the server actually told us, for diagnosing silent empty results
+    let resultCount = 0;
+    const typeCounts: Record<string, number> = {};
+    let acceptedChars = 0;
+    let lsFlags = 0;
+    let lastRawSample = "";
+
     const failTimer = setTimeout(() => {
       if (finished) return;
       // hard timeout: never drop text that was already recognized, only report
@@ -158,6 +165,20 @@ export async function transcribePcm(
       } catch {
         /* noop */
       }
+      console.log(
+        "[Iflytek ASR] ws resultCount=" +
+          resultCount +
+          " types=" +
+          JSON.stringify(typeCounts) +
+          " final=" +
+          finalSegments.size +
+          " chars=" +
+          acceptedChars +
+          " ls=" +
+          lsFlags +
+          " last=" +
+          lastRawSample,
+      );
       if (err) reject(err);
       else
         resolve(
@@ -226,6 +247,12 @@ export async function transcribePcm(
           .flatMap((ws: any) => ws.cw || [])
           .map((cw: any) => cw.w ?? "")
           .join("");
+
+        resultCount++;
+        typeCounts[type] = (typeCounts[type] || 0) + 1;
+        acceptedChars += segText.length;
+        if (d.ls === true) lsFlags++;
+        if (resultCount <= 2) lastRawSample = JSON.stringify(msg).slice(0, 300);
 
         // only final (type=0) results are stable
         if (type === "0" && segText) {
