@@ -268,6 +268,34 @@ serverSyncProvider: serverConfig.serverSync.provider,
 - 若仍失败，记录页面错误文案及同一次请求的 `[Iflytek ASR] ws` 日志：`started`、`sentBytes`、`sentEnd`、`resultCount`、`other`、`closeCode`、`failure`。`ASR_ENGINE_ERROR` 表示讯飞返回功能异常，`ASR_CONNECTION_CLOSED` 表示链路提前结束，`ASR_*TIMEOUT` 表示对应阶段未完成。
 - 只有收到有效的空 ASR 结果才显示「没有识别到内容」。不要再以该提示、单个 `started:false` 或一次本地合成音测试直接推断 Vercel 网络或真机麦克风正常/异常。
 
+## 2026-09-17 服务器实测根因与修复（Windows standalone 部署）
+
+在自行部署的 Windows Server 2012 R2（Node 20.20.2，standalone 模式）上实测，找到了之前无法在 Vercel 复现的**运行时根因**：
+
+### 现象
+- 服务端 ASR 每次固定推流到 **29440 字节**（约 23×1280B、≈0.92s）后，讯飞返回 `{action:"end", code:"999999"}`（Unkown Error）并断开（closeCode 1006）。
+- 相同音频、相同签名、相同推流时序的**独立 Node 脚本**（直接 require 项目根 `node_modules/ws@8.18.0`）**完全成功**，识别出完整文字。→ 排除服务器网络、签名、音频、推流节奏问题。
+
+### 根因
+- Next.js `next build`（standalone）会**把 `ws` 打包进 webpack chunk**（内联为 8.13.x 的裁剪实现，standalone 目录里找不到独立 `ws` 包文件）。
+- 该打包实现与大体积/持续推流不兼容：约 29440 字节后被对端拒绝（讯飞 999999）。
+- 独立脚本用的是根 `node_modules/ws@8.18.0`（完整实现），故成功。
+
+### 修复
+- `next.config.mjs`：在 `webpack()` server 分支把 `ws` 加入 `config.externals`，并在 `experimental.serverComponentsExternalPackages: ["ws"]` 声明，使 `ws` **不打包**、运行时从 `node_modules` 解析。
+- 重新构建后 standalone 目录出现 `node_modules/ws`（8.18.0），ASR 请求 `sentBytes:187120`（全量推送）、`sentEnd:true`，完整转写成功：
+  ```
+  {"text":"你好，请问今天天气怎么样？我想去公园散步。", ...}
+  ```
+
+### 若后续在 Vercel 复现
+- Vercel 的 `outputFileTracing` 通常也会把 external 包带入函数，但不排除其自带 ws 版本差异。若 `[Iflytek ASR] ws` 出现固定近 30KB 后 `code:999999`，优先检查部署产物里 `ws` 的来源与版本，而不是网络。
+
+### Windows 自托管部署要点（Node standalone）
+- 用**计划任务**（`schtasks`）开机自启、脱离 SSH 会话运行：`node .next/standalone/server.js`，`PORT=8086` `HOSTNAME=0.0.0.0`。
+- standalone 目录需手动补齐 `.env`、`public/`、`.next/static`（Next 不会自动复制）。
+- 服务器 PowerShell 5.1 需强制 TLS 1.2（`[Net.ServicePointManager]::SecurityProtocol=Tls12`）才能访问 registry 下载依赖。
+
 ## 上游同步后的重打流程
 
 1. `git fetch upstream && git merge upstream/main`（或 rebase）。

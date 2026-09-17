@@ -47,6 +47,32 @@ Vercel 免费计划有 60s 函数限制。若需超长语音，可改用 Docker 
 - 服务器公网 IP 非 80/443 端口时，用另一台云服务器做反向代理（Nginx/Caddy）到 NextChat 容器端口即可。
 - 本实现仍限制每段音频 40 秒并设置 55 秒转写超时；仅更换部署平台不会自动放开这些限制。
 
+### Windows Server 自托管（Node standalone）实测要点
+
+已在 Windows Server 2012 R2 + Node 20.20.2 验证可用。关键点：
+
+1. **`ws` 必须外部化**（`next.config.mjs` 已加 `experimental.serverComponentsExternalPackages: ["ws"]` + webpack externals）。否则 Next 会把 `ws` 打包进 chunk 的裁剪实现，ASR 推流约 29440 字节后被讯飞拒绝（`code:999999`），而独立脚本用根 `node_modules/ws@8.18.0` 却成功。务必使用本分支的 `next.config.mjs` 重新构建。
+2. standalone 部署后手动补齐静态资源（Next 不会自动复制）：
+   ```
+   xcopy .next\static .next\standalone\.next\static /e /i
+   xcopy public .next\standalone\public /e /i
+   copy .env .next\standalone\.env
+   ```
+3. 用计划任务开机自启、脱离 SSH 会话运行：
+   ```
+   schtasks /create /tn nextchat /tr "cmd /c 启动脚本" /sc onstart /ru SYSTEM
+   ```
+   启动脚本内容：
+   ```bat
+   @echo off
+   set PATH=C:\path\to\node;%PATH%
+   cd /d E:\letvar\services\nextchat\.next\standalone
+   set PORT=8086
+   set HOSTNAME=0.0.0.0
+   node server.js
+   ```
+4. 服务器 PowerShell 5.1 需强制 TLS 1.2 才能下载依赖：`[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12`。
+
 ## 六、修复后的错误定位
 
 服务端等待讯飞确认会话后才开始发送音频。功能异常、提前断连和超时会显示实际错误，不再全部表现为「没有识别到内容」。Vercel 日志中的 `[Iflytek ASR] ws` 包含发送字节数、结束标记、结果数及失败阶段，不包含录音或转写正文。

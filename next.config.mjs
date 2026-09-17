@@ -8,7 +8,7 @@ console.log("[Next] build with chunk: ", !disableChunk);
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  webpack(config) {
+  webpack(config, { isServer }) {
     config.module.rules.push({
       test: /\.svg$/,
       use: ["@svgr/webpack"],
@@ -24,6 +24,14 @@ const nextConfig = {
       child_process: false,
     };
 
+    // ws must not be bundled: Next's bundled copy is incomplete/unreliable and
+    // caused the iflytek websocket to be dropped after ~29440 bytes. Keep it
+    // external so the runtime resolves the full implementation from
+    // node_modules (8.18.0).
+    if (isServer) {
+      config.externals = [...(config.externals ?? []), "ws"];
+    }
+
     return config;
   },
   output: mode,
@@ -32,6 +40,7 @@ const nextConfig = {
   },
   experimental: {
     forceSwcTransforms: true,
+    serverComponentsExternalPackages: ["ws"],
   },
 };
 
