@@ -7,7 +7,7 @@ import LoadingIcon from "../icons/loading.svg";
 import { useAccessStore } from "../store/access";
 import { getHeaders } from "../client/api";
 import { ACCESS_CODE_PREFIX } from "../constant";
-import { showToast } from "./ui-lib";
+import { showToast, showConfirm } from "./ui-lib";
 import Locale from "../locales";
 import clsx from "clsx";
 import { resampleTo16kPcm, isPcmSilent } from "../utils/pcm-resample";
@@ -358,6 +358,21 @@ export function VoiceInputBar({
         if (mountedRef.current) onModeChange(true);
       } catch (error) {
         if (mountedRef.current && (error as Error).name !== "AbortError") {
+          // getElementById mic permissions only work on a secure context
+          // (HTTPS or localhost). If the user reached the site over plain
+          // HTTP, offer to switch to HTTPS instead of a confusing message.
+          if (
+            typeof window !== "undefined" &&
+            window.isSecureContext === false
+          ) {
+            const ok = await showConfirm(Locale.VoiceInput.HttpsRequired);
+            if (ok && window.location.protocol === "http:") {
+              window.location.href =
+                "https:" +
+                window.location.href.slice(window.location.protocol.length);
+            }
+            return;
+          }
           showToast(
             isStandalonePwa()
               ? Locale.VoiceInput.StandaloneMicError

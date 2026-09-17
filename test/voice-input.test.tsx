@@ -28,6 +28,7 @@ jest.unstable_mockModule("@/app/client/api", () => ({
 }));
 jest.unstable_mockModule("@/app/components/ui-lib", () => ({
   showToast: jest.fn(),
+  showConfirm: jest.fn(() => Promise.resolve(false)),
 }));
 jest.unstable_mockModule("@/app/locales", () => ({
   default: {

@@ -122,6 +122,8 @@ const en: LocaleType = {
     Processing: "Transcribing…",
     ToggleToVoice: "Switch to voice input",
     ToggleToText: "Switch to text input",
+    HttpsRequired:
+      "Voice input requires HTTPS access (browsers block the microphone on HTTP). The current page is HTTP - go to HTTPS?",
   },
   Export: {
     Title: "Export Messages",

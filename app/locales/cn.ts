@@ -120,6 +120,8 @@ const cn = {
     Processing: "转写中…",
     ToggleToVoice: "切换为语音输入",
     ToggleToText: "切换为文字输入",
+    HttpsRequired:
+      "语音输入需要 HTTPS 访问（浏览器限制麦克风权限）。当前页面是 HTTP，是否跳转到 HTTPS 访问？",
   },
   Export: {
     Title: "分享聊天记录",
