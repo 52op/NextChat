@@ -282,7 +282,10 @@ export function VoiceInputBar({
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
+  // which action zone the pointer is currently over while holding
+  const [activeZone, setActiveZone] = useState<"cancel" | "transcribe" | null>(
+    null,
+  );
 
   const recorderRef = useRef<MediaRecorderRecorder | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -293,13 +296,18 @@ export function VoiceInputBar({
   const pressedRef = useRef(false);
   // whether the recorder has finished arming (async on mobile)
   const armedRef = useRef(false);
-  // slide-up-to-cancel tracking
-  const startYRef = useRef(0);
-  const cancellingRef = useRef(false);
-  const setCancellingState = useCallback((v: boolean) => {
-    cancellingRef.current = v;
-    setCancelling(v);
-  }, []);
+  // wechat-style arc zones shown above the hold surface while recording
+  const cancelZoneRef = useRef<HTMLDivElement | null>(null);
+  const transcribeZoneRef = useRef<HTMLDivElement | null>(null);
+  const zoneRef = useRef<HTMLDivElement | null>(null);
+  const activeZoneRef = useRef<"cancel" | "transcribe" | null>(null);
+  const setActiveZoneState = useCallback(
+    (z: "cancel" | "transcribe" | null) => {
+      activeZoneRef.current = z;
+      setActiveZone(z);
+    },
+    [],
+  );
 
   const updateRecording = useCallback(
     (v: boolean) => {
@@ -570,7 +578,7 @@ export function VoiceInputBar({
   const startHold = useCallback(() => {
     if (processing || starting || recording) return;
     pressedRef.current = true;
-    setCancellingState(false);
+    setActiveZoneState(null);
     if (engine === "iflytek") {
       startIflytek();
     } else if (engine === "web-speech") {
@@ -583,13 +591,14 @@ export function VoiceInputBar({
     recording,
     startIflytek,
     startWebSpeech,
-    setCancellingState,
+    setActiveZoneState,
   ]);
 
   const cancelHold = useCallback(() => {
     if (!pressedRef.current) return;
     pressedRef.current = false;
     armedRef.current = false;
+    setActiveZoneState(null);
     if (engine === "iflytek") {
       recorderRef.current?.cancel();
       recorderRef.current = null;
@@ -600,14 +609,14 @@ export function VoiceInputBar({
       updateRecording(false);
       setProcessing(false);
     }
-  }, [engine, updateRecording]);
+  }, [engine, updateRecording, setActiveZoneState]);
 
   const endHold = useCallback(() => {
     if (!pressedRef.current) return;
     pressedRef.current = false;
-    if (cancellingRef.current) {
-      // released in the cancel zone: discard the recording
-      setCancellingState(false);
+    // released over the cancel arc: discard the recording
+    if (activeZoneRef.current === "cancel") {
+      setActiveZoneState(null);
       armedRef.current = false;
       if (engine === "iflytek") {
         recorderRef.current?.cancel();
@@ -621,51 +630,53 @@ export function VoiceInputBar({
       }
       return;
     }
+    setActiveZoneState(null);
     if (engine === "iflytek") {
       stopIflytek();
     } else if (engine === "web-speech") {
       stopWebSpeech();
     }
-  }, [engine, stopIflytek, stopWebSpeech, setCancellingState, updateRecording]);
+  }, [engine, stopIflytek, stopWebSpeech, setActiveZoneState, updateRecording]);
 
-  /** track vertical drag: sliding up beyond the threshold arms the cancel
-   *  zone, sliding back below it re-arms the send zone (like WeChat) */
-  const updateSlide = useCallback(
-    (y: number) => {
+  /** update the highlighted arc from a pointer position */
+  const updatePointerZone = useCallback(
+    (x: number, y: number) => {
       if (!pressedRef.current) return;
-      const dy = startYRef.current - y;
-      if (dy >= SLIDE_CANCEL_THRESHOLD) {
-        if (!cancellingRef.current) {
-          setCancellingState(true);
-          console.log("[VoiceInput] slide-to-cancel armed");
-        }
-      } else if (dy <= SLIDE_CANCEL_THRESHOLD / 2) {
-        if (cancellingRef.current) {
-          setCancellingState(false);
-          console.log("[VoiceInput] slide-to-cancel disarmed");
-        }
+      const inRect = (el: HTMLDivElement | null) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      };
+      // only the cancel / transcribe arcs can be highlighted; anywhere else
+      // falls back to the default action (transcribe) with no highlight
+      let zone: "cancel" | "transcribe" | null = null;
+      if (inRect(cancelZoneRef.current)) zone = "cancel";
+      else if (inRect(transcribeZoneRef.current)) zone = "transcribe";
+      if (zone !== activeZoneRef.current) {
+        setActiveZoneState(zone);
+        if (zone) console.log("[VoiceInput] arc selected", zone);
       }
     },
-    [setCancellingState],
+    [setActiveZoneState],
   );
 
   const handleTouchStart = useCallback(
     (e: React.TouchEvent) => {
       e.preventDefault();
       lastTouchTimeRef.current = Date.now();
-      startYRef.current = e.touches[0]?.clientY ?? 0;
-      setCancellingState(false);
+      setActiveZoneState(null);
       startHold();
     },
-    [startHold, setCancellingState],
+    [startHold, setActiveZoneState],
   );
 
   const handleTouchMove = useCallback(
     (e: React.TouchEvent) => {
       e.preventDefault();
-      updateSlide(e.touches[0]?.clientY ?? 0);
+      const t = e.touches[0];
+      if (t) updatePointerZone(t.clientX, t.clientY);
     },
-    [updateSlide],
+    [updatePointerZone],
   );
 
   const handleTouchEnd = useCallback(
@@ -689,11 +700,19 @@ export function VoiceInputBar({
       // suppress the synthetic mouse events fired after a real touch
       if (Date.now() - lastTouchTimeRef.current < 700) return;
       e.preventDefault();
-      startYRef.current = e.clientY;
-      setCancellingState(false);
+      // keep receiving mousemove/up even when the pointer slides out onto
+      // the arcs above the surface (desktop drag like WeChat)
+      try {
+        e.currentTarget.setPointerCapture(
+          (e.nativeEvent as any).pointerId ?? 0,
+        );
+      } catch {
+        /* noop */
+      }
+      setActiveZoneState(null);
       startHold();
     },
-    [startHold, setCancellingState],
+    [startHold, setActiveZoneState],
   );
 
   const handleMouseUp = useCallback(
@@ -708,25 +727,28 @@ export function VoiceInputBar({
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (Date.now() - lastTouchTimeRef.current < 700) return;
-      updateSlide(e.clientY);
+      updatePointerZone(e.clientX, e.clientY);
     },
-    [updateSlide],
+    [updatePointerZone],
   );
 
   const handleMouseLeave = useCallback(
     (e: React.MouseEvent) => {
       if (Date.now() - lastTouchTimeRef.current < 700) return;
-      if (pressedRef.current) {
-        cancelHold();
-      }
+      // on a real press, moving outside the surface still allows landing on
+      // the arcs above, so do not cancel here; only reset highlight.
+      setActiveZoneState(null);
     },
-    [cancelHold],
+    [setActiveZoneState],
   );
 
   if (engine === "none") return null;
 
   // voice mode: the whole input area becomes a hold-to-talk surface,
-  // with a keyboard toggle on the left to switch back to text mode
+  // with a keyboard toggle on the left to switch back to text mode. While
+  // recording, two wechat-style arcs float above: cancel (left) and
+  // transcribe (right); sliding the finger onto one highlights it and
+  // releasing over it performs that action.
   if (voiceMode) {
     return (
       <div className={styles["voice-mode-wrap"]}>
@@ -737,41 +759,67 @@ export function VoiceInputBar({
         >
           <KeyboardIcon />
         </span>
-        <div
-          className={clsx(
-            styles["hold-to-talk"],
-            recording && styles["recording"],
-            cancelling && styles["cancelling"],
-            starting && styles["starting"],
-            processing && styles["processing"],
+        <div className={styles["hold-to-talk-zone-wrap"]}>
+          {(recording || starting) && (
+            <div className={styles["arc-zones"]} aria-hidden>
+              <div
+                ref={cancelZoneRef}
+                className={clsx(
+                  styles["arc-zone"],
+                  styles["arc-cancel"],
+                  activeZone === "cancel" && styles["arc-active"],
+                )}
+              >
+                <span>{Locale.VoiceInput.CancelAction}</span>
+              </div>
+              <div
+                ref={transcribeZoneRef}
+                className={clsx(
+                  styles["arc-zone"],
+                  styles["arc-transcribe"],
+                  activeZone === "transcribe" && styles["arc-active"],
+                )}
+              >
+                <span>{Locale.VoiceInput.TranscribeAction}</span>
+              </div>
+            </div>
           )}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-          onTouchCancel={handleTouchCancel}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-        >
-          <span className={styles["hold-to-talk-icon"]}>
-            {recording ? (
-              <Waveform />
-            ) : processing || starting ? (
-              <LoadingIcon />
-            ) : (
-              <VoiceIcon />
+          <div
+            ref={zoneRef}
+            className={clsx(
+              styles["hold-to-talk"],
+              recording && styles["recording"],
+              starting && styles["starting"],
+              processing && styles["processing"],
             )}
-          </span>
-          <span className={styles["hold-to-talk-text"]}>
-            {processing
-              ? Locale.VoiceInput.Processing
-              : cancelling
-              ? Locale.VoiceInput.ReleaseToCancel
-              : recording
-              ? Locale.VoiceInput.Listening
-              : Locale.VoiceInput.HoldToTalk}
-          </span>
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchCancel}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+          >
+            <span className={styles["hold-to-talk-icon"]}>
+              {recording ? (
+                <Waveform />
+              ) : processing || starting ? (
+                <LoadingIcon />
+              ) : (
+                <VoiceIcon />
+              )}
+            </span>
+            <span className={styles["hold-to-talk-text"]}>
+              {processing
+                ? Locale.VoiceInput.Processing
+                : recording && activeZone
+                ? Locale.VoiceInput.ReleaseToTranscribe
+                : recording
+                ? Locale.VoiceInput.Listening
+                : Locale.VoiceInput.HoldToTalk}
+            </span>
+          </div>
         </div>
       </div>
     );

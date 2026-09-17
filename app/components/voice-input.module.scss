@@ -36,6 +36,63 @@
   }
 }
 
+/* wrapper that can host the floating arc menu above the hold surface */
+.hold-to-talk-zone-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+/* wechat-style two-arc action menu: cancel (left) / transcribe (right).
+   Sliding onto an arc highlights it; releasing over it performs that action. */
+.arc-zones {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(100% + 12px);
+  display: flex;
+  gap: 12px;
+  z-index: 10;
+}
+
+.arc-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 72px;
+  border-radius: 44px 44px 16px 16px; /* arc-like rounded top */
+  background-color: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  pointer-events: none; /* area hit-testing is done by the pointer handlers */
+  transition: all ease 0.2s;
+  backdrop-filter: blur(2px);
+
+  span {
+    pointer-events: none;
+  }
+}
+
+.arc-cancel {
+  &.arc-active {
+    background-color: var(--danger);
+    transform: scale(1.08);
+  }
+}
+
+.arc-transcribe {
+  &.arc-active {
+    background-color: var(--primary);
+    transform: scale(1.08);
+  }
+}
+
 .hold-to-talk {
   display: flex;
   align-items: center;
@@ -70,16 +127,6 @@
     color: white;
     background-color: var(--danger);
     border-color: var(--danger);
-  }
-
-  /* slide-up cancel zone: stronger warning color so the user knows releasing
-     here discards the recording (like WeChat) */
-  &.cancelling {
-    color: white;
-    background-color: var(--danger);
-    border-color: white;
-    border-width: 2px;
-    box-shadow: 0 0 0 2px var(--danger);
   }
 
   &.processing {
