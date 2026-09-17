@@ -567,13 +567,10 @@ export function VoiceInputBar({
   }, [updateRecording]);
 
   // ---------- hold-to-talk handlers ----------
-  // Use touch + mouse events directly (like WeChat) and preventDefault all
-  // touch gestures: this stops iOS text selection / long-press callout from
-  // hijacking the pointer stream. A timestamp suppresses the synthetic mouse
-  // events that browsers fire right after touch.
-  const lastTouchTimeRef = useRef(0);
-  // slide up distance (px) that arms the cancel gesture, like WeChat
-  const SLIDE_CANCEL_THRESHOLD = 60;
+  // Pointer events unify touch + mouse. pointerdown captures the pointer, so
+  // pointermove/up keep firing here even when the finger slides onto the arcs
+  // above the surface (WeChat style). touch-action:none in the CSS stops the
+  // browser from stealing the gesture for scrolling / text selection.
 
   const startHold = useCallback(() => {
     if (processing || starting || recording) return;
@@ -660,83 +657,60 @@ export function VoiceInputBar({
     [setActiveZoneState],
   );
 
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      lastTouchTimeRef.current = Date.now();
-      setActiveZoneState(null);
-      startHold();
-    },
-    [startHold, setActiveZoneState],
-  );
-
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      const t = e.touches[0];
-      if (t) updatePointerZone(t.clientX, t.clientY);
-    },
-    [updatePointerZone],
-  );
-
-  const handleTouchEnd = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      endHold();
-    },
-    [endHold],
-  );
-
-  const handleTouchCancel = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      cancelHold();
-    },
-    [cancelHold],
-  );
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      // suppress the synthetic mouse events fired after a real touch
-      if (Date.now() - lastTouchTimeRef.current < 700) return;
-      e.preventDefault();
-      // keep receiving mousemove/up even when the pointer slides out onto
-      // the arcs above the surface (desktop drag like WeChat)
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      // take over the pointer stream: after this, pointermove/up keep firing
+      // on this surface even when the finger/mouse slides onto the arcs
+      // above it (desktop and mobile both, like WeChat)
       try {
-        e.currentTarget.setPointerCapture(
-          (e.nativeEvent as any).pointerId ?? 0,
-        );
+        e.currentTarget.setPointerCapture(e.pointerId);
       } catch {
         /* noop */
       }
+      e.preventDefault();
       setActiveZoneState(null);
       startHold();
     },
     [startHold, setActiveZoneState],
   );
 
-  const handleMouseUp = useCallback(
-    (e: React.MouseEvent) => {
-      if (Date.now() - lastTouchTimeRef.current < 700) return;
-      e.preventDefault();
-      endHold();
-    },
-    [endHold],
-  );
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
-      if (Date.now() - lastTouchTimeRef.current < 700) return;
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
       updatePointerZone(e.clientX, e.clientY);
     },
     [updatePointerZone],
   );
 
-  const handleMouseLeave = useCallback(
-    (e: React.MouseEvent) => {
-      if (Date.now() - lastTouchTimeRef.current < 700) return;
-      // on a real press, moving outside the surface still allows landing on
-      // the arcs above, so do not cancel here; only reset highlight.
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* noop */
+      }
+      endHold();
+    },
+    [endHold],
+  );
+
+  const handlePointerCancel = useCallback(
+    (e: React.PointerEvent) => {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* noop */
+      }
+      cancelHold();
+    },
+    [cancelHold],
+  );
+
+  const handlePointerLeave = useCallback(
+    (e: React.PointerEvent) => {
+      // with pointer capture this normally does not fire while pressed; keep
+      // it as a safety net only (do not cancel, just clear the highlight)
+      if (!pressedRef.current) return;
       setActiveZoneState(null);
     },
     [setActiveZoneState],
@@ -792,14 +766,11 @@ export function VoiceInputBar({
               starting && styles["starting"],
               processing && styles["processing"],
             )}
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-            onTouchCancel={handleTouchCancel}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseLeave}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
+            onPointerLeave={handlePointerLeave}
           >
             <span className={styles["hold-to-talk-icon"]}>
               {recording ? (

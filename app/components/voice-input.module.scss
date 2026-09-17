@@ -54,6 +54,8 @@
   display: flex;
   gap: 12px;
   z-index: 10;
+  pointer-events: none; /* let pointer events pass through to the captured
+                           hold surface for hit-testing */
 }
 
 .arc-zone {
