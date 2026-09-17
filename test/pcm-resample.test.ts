@@ -14,6 +14,44 @@ function pcmFromInt16(values: number[]): Uint8Array {
 }
 
 describe("isPcmSilent", () => {
+  test("does not skip periodic speech whose sampled peaks fall between strides", () => {
+    const samples = new Int16Array(16000);
+    for (let i = 0; i < samples.length; i++) {
+      samples[i] = Math.round(
+        12000 * Math.sin((2 * Math.PI * 160 * i) / 16000),
+      );
+    }
+    expect(isPcmSilent(new Uint8Array(samples.buffer))).toBe(false);
+  });
+
+  test("ignores audio outside the supplied subarray", () => {
+    const backing = pcmFromInt16([20000, 0, 0, 20000]);
+    const pcm = backing.subarray(2, 6);
+    expect(isPcmSilent(pcm)).toBe(true);
+    expect(pcmDiagnostics(pcm).frameCount).toBe(2);
+    expect(pcmDiagnostics(pcm).peak).toBe(0);
+    expect(voiceActivity(pcm).activeFrames).toBe(0);
+    expect(pcmEnvelope(pcm, 2)).toEqual([0, 0]);
+  });
+
+  test("normalizes only audio in an unaligned buffer view", () => {
+    const backing = new Uint8Array(9).fill(255);
+    const pcm = backing.subarray(3, 7);
+    new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength).setInt16(
+      0,
+      100,
+      true,
+    );
+    new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength).setInt16(
+      2,
+      -100,
+      true,
+    );
+    const normalized = normalizeGain(pcm);
+    expect(normalized.length).toBe(4);
+    expect(pcmDiagnostics(normalized).peak).toBe(2000);
+    expect(backing[0]).toBe(255);
+  });
   test("empty buffer is silent", () => {
     expect(isPcmSilent(new Uint8Array(0))).toBe(true);
   });

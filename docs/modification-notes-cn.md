@@ -216,7 +216,9 @@ serverSyncProvider: serverConfig.serverSync.provider,
 6. **`test/iflytek-asr-transcribe.test.ts`（新增）**：用 `jest.unstable_mockModule("ws")` 造假的讯飞服务端，覆盖 4 条路径：收尾宽限返回、缺 sessionId 兜底、硬超时返回已有文本、无结果超时报错。
    - 注意：本仓库测试以**原生 ESM** 运行（`extensionsToTreatAsEsm` + `--experimental-vm-modules`），`jest.mock` 不会被提升，写模块 mock 必须用 `jest.unstable_mockModule` + 动态 `import()`；`jest` 需从 `@jest/globals` 导入。
 
-## 2026-09-17 语音输入空转写排查（交接记录）
+## 2026-09-17 语音输入空转写排查（历史交接记录）
+
+> 以下为上一轮排查记录，部分推断未经验证；请以文末「协议复核与修复」为准。
 
 **症状**：Android/iOS 真机按住说话 → 松开 →「转写中」→ 数秒后「未识别到内容」。
 
@@ -232,7 +234,7 @@ serverSyncProvider: serverConfig.serverSync.provider,
 **未决难点**（分工交接用）：
 
 1. **Vercel 出站 WebSocket 是否真通（最高嫌疑）**。服务端日志 `resultCount:0` 连一条结果都没有，但**未确认 `started` 字段**。判据：查看 Vercel 最新一次 `[Iflytek ASR] ws {...}` 日志的 `started` 值——
-   - `started:false` → 讯飞未确认会话，音频白发，**实锤 Vercel Serverless 出站 WS 被阻** → 换自建代理或转写通道，问题即止。
+   - `started:false` 只能说明客户端未识别到会话确认；可能是连接、鉴权、消息结构或服务启动问题，不能据此断言 Vercel 阻止出站 WebSocket。
    - `started:true` 但 `resultCount:0` → 继续查 flush 竞态（见 3）。
 2. **真实人声从未直接喂过讯飞（方法盲区）**。已测合成音/拟真音均非真实语音。需抓真机原始 pcm 本地重放，分离「传输路径」vs「引擎识别内容」。
 3. **flush 竞态**（`ASR_FLUSH_TIMEOUT_MS` 4000→8000，commit `338588d5`）：发完 end 后讯飞偶尔 8s 级慢才回最终结果，旧 4s 宽限提前 close → `resultCount:0`。已加长，**未在真机验证**。
@@ -243,6 +245,28 @@ serverSyncProvider: serverConfig.serverSync.provider,
 - 拿到 `<base64>` 后：本地解码 → 直连讯飞重放同一批字节 → 相同空/非空比较即定位「传输」vs「内容」。
 
 **最短定位路径**：外层换调 —— ①Vercel 日志看 `started`；②空转写时从手机 console 抓 `empty wav base64` 串回传。
+
+## 2026-09-17 协议复核与修复
+
+### 已证实的代码缺陷
+
+复核依据：[讯飞官方协议文档](https://www.xfyun.cn/doc/spark/asr_llm/rtasr_llm.html)及其 Python 示例 `lc-sp-rtasr_llm_demo-1767597748832.zip`。本轮未获得实际部署的讯飞凭据或 Vercel 运行日志，因此以下是代码和协议层面确认的问题，不代表已证明线上唯一根因。
+
+1. **功能错误被吞掉**：官方明确给出的 `msg_type=result, res_type=frc, data.normal=false` 异常原来只增加计数。随后任何 `close` 都当成功，最终向用户提示「没有识别到内容」。现按错误返回 HTTP 502，并显示服务端说明；额度和鉴权错误也保留错误码。
+2. **发送时序与会话 ID**：原来 WebSocket 一打开就开始推音频，尚未等待业务 `started` 确认；缺少服务端 sessionId 时又随机编造一个。现等待业务确认再按 1280 字节/40ms 推流；结束使用服务端 ID，没有时按官方 Python 示例省略该字段。兼容文档中的顶层 `action/data/sid` 和嵌套消息结构。
+3. **空结果与截断混淆**：原来提前断连返回成功、超时返回已识别的句子前半段。现仅在完整结束或正常关闭且收到确定结果后返回成功；启动、结果等待、总时长都有明确超时并释放定时器。结果等待为 10 秒无进展超时，收到结果后重新计时；总截止时间为 55 秒，路由 `maxDuration=60`。
+4. **音频视图错误**：`new Int16Array(pcm.buffer)` 忽略 Node Buffer/WAV 子视图的 byteOffset 和 byteLength，导致诊断读取其他字节、增益处理被跳过。所有 PCM 工具改为只处理当前视图，并处理奇数偏移。静音检测不再每隔 100 个采样取一点，避免固定频率落在零点导致误判。
+5. **WAV 输入校验**：增加 `app/utils/asr-audio.ts`，校验 16k/16bit/单声道 PCM、chunk 边界和奇数长度填充。损坏或格式不符返回 400，避免把 WAV 头当音频发送。
+6. **录音生命周期**：合并并发权限请求、重新获取已结束的轨道、退出空闲语音模式也释放麦克风、忽略卸载后的权限结果、取消转写请求后禁止回填。Web Speech 模式不再额外占用 MediaRecorder 麦克风流。
+7. **撤除试探性处理**：不再强制禁用浏览器降噪/回声处理，不再对每段录音自动增益，不再在空结果时返回/打印/自动下载整段音频。默认保留不含音频和转写正文的传输统计；显式设置 `localStorage.voiceDownloadDebug=1` 仍可在本机导出录音。
+
+### 验证及部署复测
+
+- TypeScript 类型检查通过；Jest 全量 39 个套件、214 个用例通过。
+- 增加/更新讯飞协议、PCM 子视图、WAV 解析、麦克风资源生命周期回归测试。模拟测试证明这些缺陷已修复，不能代替 Vercel 与手机实测。
+- 无需增加环境变量。部署修复后刷新页面，先录制一句 3–5 秒的清晰语音；正常结果应填入输入框。
+- 若仍失败，记录页面错误文案及同一次请求的 `[Iflytek ASR] ws` 日志：`started`、`sentBytes`、`sentEnd`、`resultCount`、`other`、`closeCode`、`failure`。`ASR_ENGINE_ERROR` 表示讯飞返回功能异常，`ASR_CONNECTION_CLOSED` 表示链路提前结束，`ASR_*TIMEOUT` 表示对应阶段未完成。
+- 只有收到有效的空 ASR 结果才显示「没有识别到内容」。不要再以该提示、单个 `started:false` 或一次本地合成音测试直接推断 Vercel 网络或真机麦克风正常/异常。
 
 ## 上游同步后的重打流程
 

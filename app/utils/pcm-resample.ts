@@ -4,6 +4,19 @@
  */
 export const PCM_TARGET_RATE = 16000;
 
+// Node Buffers and WAV data chunks may be views into a larger backing buffer.
+// Read only this view, including when its byte offset is not 16-bit aligned.
+function pcmSamples(pcm: Uint8Array): Int16Array {
+  const count = Math.floor(pcm.byteLength / 2);
+  if (pcm.byteOffset % 2 === 0) {
+    return new Int16Array(pcm.buffer, pcm.byteOffset, count);
+  }
+  const samples = new Int16Array(count);
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  for (let i = 0; i < count; i++) samples[i] = view.getInt16(i * 2, true);
+  return samples;
+}
+
 export function resampleTo16kPcm(
   samples: Float32Array,
   srcRate: number,
@@ -33,9 +46,9 @@ export function resampleTo16kPcm(
  */
 export function isPcmSilent(pcm: Uint8Array, threshold = 300): boolean {
   if (pcm.length === 0) return true;
-  const view = new Int16Array(pcm.buffer);
+  const view = pcmSamples(pcm);
   let peak = 0;
-  for (let i = 0; i < view.length; i += 100) {
+  for (let i = 0; i < view.length; i++) {
     const v = Math.abs(view[i]);
     if (v > peak) peak = v;
   }
@@ -64,7 +77,7 @@ export interface PcmDiagnostics {
  * but is too weak for the ASR server.
  */
 export function pcmDiagnostics(pcm: Uint8Array): PcmDiagnostics {
-  const view = new Int16Array(pcm.buffer);
+  const view = pcmSamples(pcm);
   let peak = 0;
   let sumSq = 0;
   let loudFrames = 0;
@@ -104,7 +117,7 @@ export interface VoiceActivity {
  * shows flat. Cheap waveform-shape fingerprint for remote debugging.
  */
 export function pcmEnvelope(pcm: Uint8Array, bins = 40): number[] {
-  const view = new Int16Array(pcm.buffer);
+  const view = pcmSamples(pcm);
   const n = view.length;
   if (n === 0) return new Array(bins).fill(0);
   const out: number[] = [];
@@ -133,7 +146,7 @@ export function voiceActivity(
   pcm: Uint8Array,
   peakThreshold = 500,
 ): VoiceActivity {
-  const view = new Int16Array(pcm.buffer);
+  const view = pcmSamples(pcm);
   const n = view.length;
   let activeFrames = 0;
   let first = -1;
@@ -160,7 +173,7 @@ export function voiceActivity(
  * noise explode. Driver for the peak target of 0 dBFS-ish audio.
  */
 export function normalizeGain(pcm: Uint8Array, targetPeak = 30000): Uint8Array {
-  const view = new Int16Array(pcm.buffer);
+  const view = pcmSamples(pcm);
   if (view.length === 0 || view.byteLength !== pcm.byteLength) return pcm;
   let peak = 0;
   for (let i = 0; i < view.length; i++) {

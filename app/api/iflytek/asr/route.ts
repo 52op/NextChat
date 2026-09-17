@@ -2,31 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSideConfig } from "@/app/config/server";
 import { auth } from "@/app/api/auth";
 import { ModelProvider } from "@/app/constant";
-import { transcribePcm } from "@/app/utils/iflytek-asr";
-import {
-  isPcmSilent,
-  normalizeGain,
-  pcmDiagnostics,
-  pcmToWav16k,
-  voiceActivity,
-} from "@/app/utils/pcm-resample";
+import { IflytekAsrError, transcribePcm } from "@/app/utils/iflytek-asr";
+import { readAsrPcm } from "@/app/utils/asr-audio";
 
-// vercel hobby: node runtime can run up to 60s
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const serverConfig = getServerSideConfig();
 
-async function handle(req: NextRequest) {
-  if (req.method === "OPTIONS") {
-    return NextResponse.json({ body: "OK" }, { status: 200 });
-  }
-
+export async function POST(req: NextRequest) {
   const authResult = auth(req, ModelProvider.GPT);
   if (authResult.error) {
     return NextResponse.json(authResult, { status: 401 });
   }
-
   if (!serverConfig.isIflytekAsrEnabled) {
     return NextResponse.json(
       { error: true, msg: "IFLYTEK ASR is not configured on the server" },
@@ -34,94 +22,44 @@ async function handle(req: NextRequest) {
     );
   }
 
-  // accept raw pcm (16k/16bit/mono) or wav
-  const buffer = Buffer.from(await req.arrayBuffer());
-
-  // strip wav header if present
-  let pcm = buffer;
-  if (buffer.length > 12 && buffer.toString("ascii", 0, 4) === "RIFF") {
-    // find data chunk
-    let off = 12;
-    while (off < buffer.length) {
-      const id = buffer.toString("ascii", off, off + 4);
-      const sz = buffer.readUInt32LE(off + 4);
-      if (id === "data") {
-        pcm = buffer.subarray(off + 8, off + 8 + sz);
-        break;
-      }
-      off += 8 + sz;
-    }
-  }
-
-  if (pcm.length === 0) {
+  let pcm: Buffer;
+  try {
+    pcm = readAsrPcm(Buffer.from(await req.arrayBuffer()));
+  } catch (error) {
     return NextResponse.json(
-      { error: true, msg: "empty audio" },
-      { status: 400 },
-    );
-  }
-
-  // roughly 16k mono 16bit => seconds
-  const seconds = pcm.length / 16000 / 2;
-  if (seconds > 40) {
-    return NextResponse.json(
-      { error: true, msg: `audio too long: ${Math.round(seconds)}s, max 40s` },
+      {
+        error: true,
+        msg: error instanceof Error ? error.message : "无效的音频",
+      },
       { status: 400 },
     );
   }
 
   try {
-    const diag = pcmDiagnostics(pcm);
-    console.log(
-      "[Iflytek ASR] in=" +
-        diag.frameCount +
-        "f/" +
-        diag.durationSec.toFixed(1) +
-        "s peak=" +
-        diag.peak +
-        " rms=" +
-        diag.rms +
-        " silent=" +
-        isPcmSilent(pcm),
-    );
-
-    // normalizing the level is a safe single-variable behavior change: it can
-    // only help (never attenuates), and it lets the whole test cycle tell us
-    // whether a whisper-quiet recording was the problem
-    const normalized = normalizeGain(pcm);
-    const { text, wsStat } = await transcribePcm(
-      serverConfig.iflytekAsr,
-      normalized,
-    );
-    console.log("[Iflytek ASR] out=" + JSON.stringify(text));
-    const diagOut = pcmDiagnostics(normalized);
-    const act = voiceActivity(pcm);
-    if (!text) {
-      console.log(
-        "[Iflytek ASR] empty result, serving debug wav base64",
-        pcm.length,
+    // Preserve the recorded signal. Amplifying every recording (including
+    // background noise) is not a substitute for a valid ASR session.
+    const { text } = await transcribePcm(serverConfig.iflytekAsr, pcm);
+    return NextResponse.json({ text });
+  } catch (error) {
+    if (error instanceof IflytekAsrError) {
+      return NextResponse.json(
+        {
+          error: true,
+          msg: error.message,
+          code: error.code,
+          debug: error.wsStat,
+        },
+        { status: error.code.includes("TIMEOUT") ? 504 : 502 },
       );
     }
-    return NextResponse.json({
-      text,
-      debug: `进包${diag.frameCount}采样/${diag.durationSec.toFixed(1)}s 峰值${
-        diag.peak
-      } rms${Math.round(diag.rms)} 后峰值${diagOut.peak} 活动帧${
-        act.activeFrames
-      }(${act.percent}%) 语音${act.firstSec.toFixed(1)}-${act.lastSec.toFixed(
-        1,
-      )}s zcr${diag.zeroCrossRate.toFixed(0)} ws=${JSON.stringify(wsStat)}`,
-      wav: text
-        ? undefined
-        : Buffer.from(pcmToWav16k(pcm).buffer).toString("base64"),
-    });
-  } catch (e: any) {
-    console.error("[Iflytek ASR]", e);
+    console.error("[Iflytek ASR] unexpected transcription failure");
     return NextResponse.json(
-      { error: true, msg: e?.message ?? "ASR failed" },
+      { error: true, msg: "语音转写失败，请重试" },
       { status: 500 },
     );
   }
 }
 
-export const POST = handle;
-export const OPTIONS = handle;
+export async function OPTIONS() {
+  return NextResponse.json({ body: "OK" });
+}

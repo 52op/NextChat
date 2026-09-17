@@ -8,11 +8,8 @@ export const ASR_WS_URL =
 export const ASR_CHUNK_BYTES = 1280;
 export const ASR_CHUNK_INTERVAL_MS = 40;
 export const ASR_SAMPLE_RATE = 16000;
-// after the end marker the server normally answers with the tail results and
-// closes the socket; if it stays open we stop waiting after this grace period.
-// was 4000ms but real iflytek occasionally took longer to emit the empty final
-// for non-speech audio, racing our close and yielding resultCount:0
-export const ASR_FLUSH_TIMEOUT_MS = 8000;
+// Maximum inactivity while waiting for the final result after uploading audio.
+export const ASR_FLUSH_TIMEOUT_MS = 10_000;
 
 export interface IflytekAsrConfig {
   appId: string;
@@ -106,199 +103,210 @@ export function iflytekAsrErrorMessage(code: string): string {
   return ERROR_MESSAGES[code] || "";
 }
 
-/**
- * Transcribe raw pcm (16k/16bit/mono) via the iflytek real-time ASR
- * websocket. Returns the concatenated final segments.
- */
+export interface AsrWsStats {
+  started: boolean;
+  sentBytes: number;
+  sentEnd: boolean;
+  resultCount: number;
+  final: number;
+  other: number;
+  closeCode?: number;
+  failure?: string;
+}
+
+export class IflytekAsrError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly wsStat: AsrWsStats,
+  ) {
+    super(message);
+    this.name = "IflytekAsrError";
+  }
+}
+
+/** Send 16k mono s16le audio only after the service has accepted the session. */
 export async function transcribePcm(
   config: IflytekAsrConfig,
   pcm: Uint8Array,
-  timeoutMs: number = 50 * 1000,
-): Promise<{ text: string; wsStat: Record<string, any> }> {
+  timeoutMs = 55_000,
+): Promise<{ text: string; wsStat: AsrWsStats }> {
+  if (!pcm.length || pcm.length % 2 !== 0) {
+    throw new Error("音频必须为非空的 16bit PCM");
+  }
   const url = buildAsrWsUrl(config);
 
-  return new Promise<{ text: string; wsStat: Record<string, any> }>(
-    (resolve, reject) => {
-      const ws = new WebSocket(url, { origin: "https://chat.it0731.cn" });
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, { handshakeTimeout: 8_000 });
+    const stats: AsrWsStats = {
+      started: false,
+      sentBytes: 0,
+      sentEnd: false,
+      resultCount: 0,
+      final: 0,
+      other: 0,
+    };
+    const segments = new Map<number, string>();
+    const pendingSegments = new Set<number>();
+    let sessionId: string | undefined;
+    let finished = false;
+    let sendTimer: ReturnType<typeof setTimeout> | undefined;
+    let resultTimer: ReturnType<typeof setTimeout> | undefined;
 
-      let sentEnd = false;
-      let pcmOffset = 0;
-      // aggregate only final segments (type=0), keyed by seg_id
-      const finalSegments = new Map<number, string>();
-      // the end marker carries a sessionId; the handshake may not provide one, so
-      // keep a client generated uuid as a fallback (community implementations
-      // send a self generated session id)
-      let sessionId = crypto.randomUUID();
-      let finished = false;
-      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (message?: string, code = "ASR_PROTOCOL_ERROR") => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline);
+      clearTimeout(startTimer);
+      clearTimeout(sendTimer);
+      clearTimeout(resultTimer);
+      stats.final = segments.size;
+      if (message) stats.failure = code;
+      // Log transport metadata only, never audio, signed URLs or transcripts.
+      console.log("[Iflytek ASR] ws " + JSON.stringify(stats));
+      if (ws.readyState === WebSocket.CONNECTING) ws.terminate();
+      else if (ws.readyState === WebSocket.OPEN) ws.close();
+      if (message) reject(new IflytekAsrError(message, code, { ...stats }));
+      else
+        resolve({
+          text: [...segments.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([, text]) => text)
+            .join(""),
+          wsStat: { ...stats },
+        });
+    };
 
-      // what the server actually told us, for diagnosing silent empty results
-      let resultCount = 0;
-      const typeCounts: Record<string, number> = {};
-      let acceptedChars = 0;
-      let lsFlags = 0;
-      let lastRawSample = "";
-      // handshake tracing: whether the server ever confirmed the session
-      let gotStarted = false;
-      let sawError = false;
-      let actionCount = 0;
-      let nonAsrMsgCount = 0;
+    // A timeout is not successful completion: returning a prefix would silently
+    // discard the end of the user's sentence.
+    const deadline = setTimeout(
+      () => finish("语音转写超时，请重试或缩短录音", "ASR_TIMEOUT"),
+      timeoutMs,
+    );
+    const startTimer = setTimeout(
+      () => finish("讯飞未确认转写会话，请稍后重试", "ASR_START_TIMEOUT"),
+      8_000,
+    );
+    const waitForResults = () => {
+      clearTimeout(resultTimer);
+      resultTimer = setTimeout(
+        () => finish("讯飞未返回完整转写结果，请重试", "ASR_RESULT_TIMEOUT"),
+        ASR_FLUSH_TIMEOUT_MS,
+      );
+    };
 
-      const failTimer = setTimeout(() => {
-        if (finished) return;
-        // hard timeout: never drop text that was already recognized, only report
-        // an error when nothing usable arrived
-        if (finalSegments.size > 0) {
-          finish();
+    const sendNext = () => {
+      if (finished || stats.sentEnd || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        if (stats.sentBytes === pcm.length) {
+          stats.sentEnd = true;
+          // Follow the official demo: use the server ID if present, otherwise
+          // omit it. A new random UUID does not identify this server session.
+          ws.send(
+            JSON.stringify({ end: true, ...(sessionId ? { sessionId } : {}) }),
+          );
+          waitForResults();
           return;
         }
-        finished = true;
-        clearInterval(sendTimer);
-        try {
-          ws.close();
-        } catch {
-          /* noop */
-        }
-        reject(new Error("ASR timeout"));
-      }, timeoutMs);
+        const end = Math.min(stats.sentBytes + ASR_CHUNK_BYTES, pcm.length);
+        ws.send(pcm.subarray(stats.sentBytes, end), { binary: true });
+        stats.sentBytes = end;
+        sendTimer = setTimeout(sendNext, ASR_CHUNK_INTERVAL_MS);
+      } catch {
+        finish("向讯飞发送音频失败，请重试", "ASR_SEND_ERROR");
+      }
+    };
 
-      const finish = (err?: Error) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(failTimer);
-        if (flushTimer) clearTimeout(flushTimer);
-        clearInterval(sendTimer);
-        try {
-          ws.close();
-        } catch {
-          /* noop */
-        }
-        const wsStat = {
-          resultCount,
-          types: typeCounts,
-          final: finalSegments.size,
-          chars: acceptedChars,
-          ls: lsFlags,
-          last: lastRawSample.slice(0, 300),
-          started: gotStarted,
-          error: sawError,
-          actions: actionCount,
-          other: nonAsrMsgCount,
-        };
-        console.log("[Iflytek ASR] ws " + JSON.stringify(wsStat));
-        if (err) reject(err);
-        else
-          resolve({
-            text: [...finalSegments.entries()]
-              .sort((a, b) => a[0] - b[0])
-              .map(([, v]) => v)
-              .join(""),
-            wsStat,
-          });
-      };
-
-      const sendTimer = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        if (sentEnd) return;
-        if (pcmOffset >= pcm.length) {
-          ws.send(JSON.stringify({ end: true, sessionId }));
-          sentEnd = true;
-          // the server may keep the socket open after the end marker: give it a
-          // short grace period and then return what we already have
-          flushTimer = setTimeout(() => {
-            if (finalSegments.size > 0) finish();
-          }, ASR_FLUSH_TIMEOUT_MS);
+    ws.on("message", (raw) => {
+      if (finished) return;
+      try {
+        const msg = JSON.parse(raw.toString());
+        // The reference describes both an action/data/sid envelope and the
+        // newer msg_type/data envelope. data can itself be a JSON string.
+        const data =
+          typeof msg.data === "string" ? JSON.parse(msg.data) : msg.data ?? {};
+        const action = msg.action ?? data.action;
+        if (
+          action === "error" ||
+          (msg.res_type === "frc" && data.normal === false)
+        ) {
+          const code = String(data.code ?? msg.code ?? "ASR_ENGINE_ERROR");
+          const desc =
+            iflytekAsrErrorMessage(code) ||
+            data.desc ||
+            msg.desc ||
+            "转写引擎异常";
+          finish(`讯飞转写失败（${code}）：${desc}`, code);
           return;
         }
-        const end = Math.min(pcmOffset + ASR_CHUNK_BYTES, pcm.length);
-        ws.send(pcm.subarray(pcmOffset, end));
-        pcmOffset = end;
-      }, ASR_CHUNK_INTERVAL_MS);
-
-      ws.on("open", () => {
-        /* sending handled by timer */
-      });
-
-      ws.on("message", (data) => {
-        let msg: any;
-        try {
-          msg = JSON.parse(data.toString());
-        } catch {
+        if (action === "started") {
+          if (stats.started) return;
+          sessionId = data.sessionId || msg.sid || data.sid || undefined;
+          stats.started = true;
+          clearTimeout(startTimer);
+          sendNext();
           return;
         }
-
-        if (msg.msg_type === "action") {
-          actionCount++;
-          const d = msg.data || {};
-          if (d.action === "started") {
-            gotStarted = true;
-            // prefer the server provided session id, fall back to the client one
-            sessionId = d.sessionId || sessionId;
-          } else if (d.action === "error") {
-            sawError = true;
-            clearInterval(sendTimer);
-            const code = String(d.code ?? "");
-            finish(
-              new Error(
-                iflytekAsrErrorMessage(code) ||
-                  `讯飞返回错误: ${d.code} ${d.desc}`,
-              ),
-            );
-          }
+        const isAsr =
+          (msg.msg_type === "result" && msg.res_type === "asr") ||
+          action === "result";
+        if (!isAsr) {
+          stats.other++;
           return;
         }
-
-        if (msg.msg_type === "result") {
-          if (msg.res_type === "asr") {
-            const d = msg.data || {};
-            const segId = d.seg_id ?? 0;
-            const type = String(d.cn?.st?.type ?? "0");
-            const wsList = d.cn?.st?.rt || [];
-            const segText = wsList
-              .flatMap((rt: any) => rt.ws || [])
-              .flatMap((ws: any) => ws.cw || [])
-              .map((cw: any) => cw.w ?? "")
-              .join("");
-
-            resultCount++;
-            typeCounts[type] = (typeCounts[type] || 0) + 1;
-            acceptedChars += segText.length;
-            if (d.ls === true) lsFlags++;
-            if (resultCount <= 2)
-              lastRawSample = JSON.stringify(msg).slice(0, 300);
-
-            // only final (type=0) results are stable
-            if (type === "0" && segText) {
-              finalSegments.set(segId, segText);
-            }
-
-            if (d.ls === true) {
-              clearInterval(sendTimer);
-              finish();
-            }
+        stats.resultCount++;
+        const segment = data.cn?.st;
+        if (segment) {
+          const segId = Number(data.seg_id ?? 0);
+          const text = (segment.rt ?? [])
+            .flatMap((rt: any) => rt.ws ?? [])
+            .map((word: any) => word.cw?.[0]?.w ?? "")
+            .join("");
+          if (String(segment.type) === "0") {
+            segments.set(segId, text);
+            pendingSegments.delete(segId);
           } else {
-            // result of a different type (frc, etc.)
-            nonAsrMsgCount++;
+            pendingSegments.add(segId);
           }
-          return;
         }
-
-        // any other message shape
-        nonAsrMsgCount++;
-      });
-
-      ws.on("error", (err) => {
-        clearInterval(sendTimer);
-        finish(new Error(`连接讯飞失败: ${err.message}`));
-      });
-
-      ws.on("close", () => {
-        clearInterval(sendTimer);
-        if (!finished) {
-          // server closed after sending all results
-          finish();
+        if (data.ls === true) {
+          if (!stats.sentEnd || pendingSegments.size) {
+            finish(
+              "讯飞提前结束转写，未收到完整结果，请重试",
+              "ASR_INCOMPLETE",
+            );
+          } else {
+            finish();
+          }
+        } else if (stats.sentEnd) {
+          waitForResults();
         }
-      });
-    },
-  );
+      } catch {
+        finish("讯飞返回了无法解析的转写消息", "ASR_INVALID_RESPONSE");
+      }
+    });
+
+    ws.on("error", () => {
+      // ws handshake errors may contain the signed request URL.
+      finish("连接讯飞失败，请检查服务配置或稍后重试", "ASR_CONNECTION_ERROR");
+    });
+    ws.on("close", (code) => {
+      stats.closeCode = code;
+      if (finished) return;
+      if (
+        code === 1000 &&
+        stats.started &&
+        stats.sentEnd &&
+        stats.resultCount > 0 &&
+        pendingSegments.size === 0
+      ) {
+        finish();
+      } else {
+        finish(
+          `讯飞连接提前关闭（${code}），未收到完整转写结果`,
+          "ASR_CONNECTION_CLOSED",
+        );
+      }
+    });
+  });
 }

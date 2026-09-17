@@ -49,32 +49,16 @@ export function useVoiceEngine(): VoiceEngine {
   return detectVoiceEngine();
 }
 
-/**
- * Mic permission + MediaRecorder for voice input.
- *
- * We record with the MediaRecorder API instead of a ScriptProcessorNode /
- * AudioContext graph. MediaRecorder feeds real microphone frames straight to
- * the browser's encoder (webm/opus), while the Web Audio approach depended on
- * the AudioContext being unlocked and correctly routing the mic stream through
- * a processor graph — on iOS Safari and Android Chrome the graph silently
- * produced near-silent buffers, which the silence check let through and the
- * ASR could not transcribe ("no content recognized").
- *
- * Recording: MediaRecorder -> webm blob -> AudioContext.decodeAudioData ->
- * Float32Array at the context sample rate -> resampleTo16kPcm -> POST to
- * /api/iflytek/asr.
- *
- * iOS standalone PWA notes (WebKit bug #215884): the mic permission is revoked
- * every time the URL hash changes (NextChat uses a hash router), so we
- * pre-authorize the mic inside the toggle gesture and keep the stream alive,
- * so holding to talk never has to re-trigger the permission prompt.
- */
+// Record using MediaRecorder, decode locally, then upload 16k mono PCM.
+// Keep a microphone stream only while voice mode is active.
 let sharedStream: MediaStream | null = null;
 let decoderContext: AudioContext | null = null;
+let preparingStream: Promise<void> | null = null;
+let streamGeneration = 0;
 
 function getDecoderContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
-  if (!decoderContext) {
+  if (!decoderContext || decoderContext.state === "closed") {
     const Ctor = window.AudioContext || (window as any).webkitAudioContext;
     if (!Ctor) return null;
     decoderContext = new Ctor();
@@ -83,6 +67,8 @@ function getDecoderContext(): AudioContext | null {
 }
 
 function releaseSharedStream() {
+  streamGeneration++;
+  preparingStream = null;
   if (sharedStream) {
     sharedStream.getTracks().forEach((track) => track.stop());
     sharedStream = null;
@@ -94,21 +80,26 @@ function releaseSharedStream() {
  * holding to talk does not need to wait for / re-trigger the prompt.
  */
 export async function prepareVoiceRecorder(): Promise<void> {
-  if (sharedStream) return;
+  if (
+    sharedStream?.getAudioTracks().some((track) => track.readyState === "live")
+  )
+    return;
+  if (preparingStream) return preparingStream;
+  releaseSharedStream();
+  const generation = streamGeneration;
+  const pending = (async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (generation !== streamGeneration) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new DOMException("Recording cancelled", "AbortError");
+    }
+    sharedStream = stream;
+  })();
+  preparingStream = pending;
   try {
-    sharedStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        // ASR wants the raw mic signal. echoCancellation/noiseSuppression are
-        // suspected of carving the speech out of the recording on phones
-        // (same constraints across every recording variant, still empty text),
-        // so disable them and let the ASR see the true signal.
-        echoCancellation: false,
-        noiseSuppression: false,
-      },
-    });
-  } catch (e) {
-    console.warn("[VoiceInput] prepare mic failed", e);
-    throw e;
+    await pending;
+  } finally {
+    if (preparingStream === pending) preparingStream = null;
   }
 }
 
@@ -135,48 +126,18 @@ class MediaRecorderRecorder {
   private stream: MediaStream | null = null;
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
+  private cancelled = false;
 
   async start(): Promise<void> {
     this.chunks = [];
-    // reuse the pre-authorized stream; if it is gone, request it now
-    // (still inside the gesture, so the prompt is allowed)
-    if (!sharedStream) {
-      try {
-        sharedStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-          },
-        });
-      } catch (e) {
-        console.warn("[VoiceInput] getUserMedia failed", e);
-        throw e;
-      }
-    }
+    await prepareVoiceRecorder();
+    if (this.cancelled) return;
+    if (!sharedStream) throw new Error("Microphone is unavailable");
     if (typeof MediaRecorder === "undefined") {
       throw new Error("MediaRecorder is not supported");
     }
     this.stream = sharedStream;
     this.recorder = new MediaRecorder(sharedStream);
-    // some browsers negotiate (requested) constraints; log the effective ones
-    // so we can see if echoCancellation really got disabled on the device
-    const track = sharedStream.getAudioTracks?.()[0];
-    const settings = (track as any)?.getSettings?.();
-    if (settings) {
-      console.log(
-        "[VoiceInput] track sampleRate=" +
-          settings.sampleRate +
-          " ec=" +
-          settings.echoCancellation +
-          " ns=" +
-          settings.noiseSuppression +
-          " agc=" +
-          settings.autoGainControl +
-          " channelCount=" +
-          settings.channelCount,
-      );
-    }
-    console.log("[VoiceInput] MediaRecorder mime=" + this.recorder.mimeType);
     this.recorder.addEventListener("dataavailable", (e) => {
       if (e.data && e.data.size > 0) this.chunks.push(e.data);
     });
@@ -235,14 +196,6 @@ class MediaRecorderRecorder {
       const samples = audioBuffer.getChannelData(0);
       if (samples.length === 0) return new Uint8Array(0);
       const pcm = resampleTo16kPcm(samples, srcRate);
-      // always print a 40-bin RMS envelope so the waveform shape can be
-      // inspected without needing a file download (PWA blocks a.click())
-      try {
-        const { pcmEnvelope } = await import("../utils/pcm-resample");
-        console.log("[VoiceInput] env " + pcmEnvelope(pcm).join(","));
-      } catch {
-        /* noop */
-      }
       // set localStorage voiceDownloadDebug=1 to download the 16k wav for
       // local spectrum / ASR replay debugging
       try {
@@ -277,6 +230,7 @@ class MediaRecorderRecorder {
 
   /** stop the recorder and drop the data */
   cancel(): void {
+    this.cancelled = true;
     try {
       this.recorder?.stop();
     } catch {
@@ -331,6 +285,9 @@ export function VoiceInputBar({
 
   const recorderRef = useRef<MediaRecorderRecorder | null>(null);
   const recognitionRef = useRef<any>(null);
+  const requestRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const enteringRef = useRef(false);
   // whether the user is currently pressing the hold-to-talk surface
   const pressedRef = useRef(false);
   // whether the recorder has finished arming (async on mobile)
@@ -345,7 +302,11 @@ export function VoiceInputBar({
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      pressedRef.current = false;
+      requestRef.current?.abort();
       recorderRef.current?.cancel();
       recognitionRef.current?.abort?.();
       releaseVoiceRecorder();
@@ -354,7 +315,8 @@ export function VoiceInputBar({
 
   // cleanup when switching back to text mode
   useEffect(() => {
-    if (!voiceMode && (recording || starting || processing)) {
+    if (!voiceMode) {
+      requestRef.current?.abort();
       recorderRef.current?.cancel();
       recorderRef.current = null;
       recognitionRef.current?.abort?.();
@@ -369,26 +331,34 @@ export function VoiceInputBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
 
-  // enter / exit voice mode: pre-authorize the mic inside the toggle gesture
-  // (iOS standalone revokes permission on hash change, so we grab the stream
-  // up front and keep it for the whole voice session). We only enter voice
-  // mode AFTER the permission is granted, so holding to talk never has to
-  // race with a pending second getUserMedia call.
-  const handleEnterVoiceMode = useCallback(async () => {
-    try {
-      await prepareVoiceRecorder();
-      onModeChange(true);
-    } catch (e) {
-      console.warn("[VoiceInput] prepare failed", e);
-      showToast(
-        isStandalonePwa()
-          ? Locale.VoiceInput.StandaloneMicError
-          : Locale.VoiceInput.MicError,
-      );
-    }
-  }, [onModeChange]);
+  const handleEnterVoiceMode = useCallback(
+    async (event: React.MouseEvent) => {
+      // Prevent the enclosing label from focusing the hidden text input.
+      event.preventDefault();
+      if (enteringRef.current) return;
+      enteringRef.current = true;
+      try {
+        if (engine === "iflytek") await prepareVoiceRecorder();
+        if (mountedRef.current) onModeChange(true);
+      } catch (error) {
+        if (mountedRef.current && (error as Error).name !== "AbortError") {
+          showToast(
+            isStandalonePwa()
+              ? Locale.VoiceInput.StandaloneMicError
+              : Locale.VoiceInput.MicError,
+          );
+        }
+      } finally {
+        enteringRef.current = false;
+      }
+    },
+    [engine, onModeChange],
+  );
 
   const handleExitVoiceMode = useCallback(() => {
+    pressedRef.current = false;
+    requestRef.current?.abort();
+    recorderRef.current?.cancel();
     releaseVoiceRecorder();
     onModeChange(false);
   }, [onModeChange]);
@@ -437,8 +407,16 @@ export function VoiceInputBar({
     armedRef.current = false;
 
     setProcessing(true);
+    const controller = new AbortController();
+    requestRef.current = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 60_000);
     try {
       const pcm = await recorder.stop();
+      if (controller.signal.aborted) return;
       // 3200 bytes = 100ms at 16k mono 16bit
       if (pcm.length < 3200) {
         showToast(Locale.VoiceInput.TooShort);
@@ -490,8 +468,10 @@ export function VoiceInputBar({
         method: "POST",
         headers,
         body: pcm,
+        signal: controller.signal,
       });
       const json = await res.json();
+      if (controller.signal.aborted) return;
       if (!res.ok || json.error) {
         showToast(json.msg || Locale.VoiceInput.TranscribeError);
         return;
@@ -501,35 +481,23 @@ export function VoiceInputBar({
         onResult(text);
       } else {
         console.log("[VoiceInput] ASR empty result", json.debug ?? "");
-        // keep a copy of the exact audio the server heard so we can feed the
-        // same bytes to iflytek locally and separate engine/content from
-        // transport/vercel (json.wav is a base64 16k wav, only sent on empty)
-        if (json.wav) {
-          const link = document.createElement("a");
-          link.href = "data:audio/wav;base64," + json.wav;
-          link.download = "asr-empty.wav";
-          console.log(
-            "[VoiceInput] empty wav base64 (" +
-              Math.round(json.wav.length * 0.75) +
-              " bytes): " +
-              json.wav,
-          );
-          document.body.appendChild(link);
-          link.click();
-          setTimeout(() => {
-            document.body.removeChild(link);
-            URL.revokeObjectURL(link.href);
-          }, 3000);
-        }
         showToast(Locale.VoiceInput.NoResult);
       }
     } catch (e) {
-      console.error("[VoiceInput] iflytek failed", e);
-      showToast(Locale.VoiceInput.TranscribeError);
+      if (!controller.signal.aborted || timedOut) {
+        console.error("[VoiceInput] iflytek failed", e);
+        showToast(Locale.VoiceInput.TranscribeError);
+      }
     } finally {
+      clearTimeout(timeout);
       recorder.cancel();
-      setProcessing(false);
-      updateRecording(false);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        if (mountedRef.current) {
+          setProcessing(false);
+          updateRecording(false);
+        }
+      }
     }
   }, [onResult, updateRecording]);
 
