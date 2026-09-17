@@ -73,7 +73,19 @@ Vercel 免费计划有 60s 函数限制。若需超长语音，可改用 Docker 
    ```
 4. 服务器 PowerShell 5.1 需强制 TLS 1.2 才能下载依赖：`[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12`。
 
-## 六、修复后的错误定位
+## 六、多设备同步竞争的杜绝
+
+背景：Vercel 版旧项目与自建实例曾同时向同一 WebDAV `backup.json` 自动同步（每 60 秒），Vercel edge 写 WebDAV 会截断文件，导致所有客户端 `JSON.parse` 报 `Unterminated string`。已通过移除 Vercel 项目消除写入源。
+
+代码层面，`/api/webdav` 与 `/api/upstash` 代理路由内建**同步请求串行队列**（promise chain）：所有读写请求按到达顺序逐个执行。因此：
+
+- 单实例部署下，任意时刻只有一次 WebDAV 读写在进行；
+- 一台设备写入完成的文件，在下一台设备读取前已完整落盘，不会被读到"写一半"的截断内容；
+- 实测 5 路并发 PUT 后最终文件仍为完整单 JSON。
+
+注意：串行化基于**单进程内存队列**，仅在单实例（本部署形态）下有效；若未来横向扩展为多实例，需改分布式锁。
+
+## 七、修复后的错误定位
 
 服务端等待讯飞确认会话后才开始发送音频。功能异常、提前断连和超时会显示实际错误，不再全部表现为「没有识别到内容」。Vercel 日志中的 `[Iflytek ASR] ws` 包含发送字节数、结束标记、结果数及失败阶段，不包含录音或转写正文。
 

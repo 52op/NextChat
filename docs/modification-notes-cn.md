@@ -296,6 +296,20 @@ serverSyncProvider: serverConfig.serverSync.provider,
 - standalone 目录需手动补齐 `.env`、`public/`、`.next/static`（Next 不会自动复制）。
 - 服务器 PowerShell 5.1 需强制 TLS 1.2（`[Net.ServicePointManager]::SecurityProtocol=Tls12`）才能访问 registry 下载依赖。
 
+## 2026-09-17 同步损坏根因（Vercel 旧实例 + 并发写）与串行化
+
+### 现象
+- 自建实例上同步持续报 `SyntaxError: Unterminated string in JSON`，且位置不断变化（326595 / 265706 / 236564 / 188416…）。
+- 删除 WebDAV `backup.json` 后 2 分钟内文件又被重新创建为相同损坏字节——说明有**实时第三方写入源**。
+
+### 根因
+1. **Vercel 旧项目仍在运行**：其前端每 60 秒自动同步到同一 WebDAV（`fs.it0731.cn:12347`），Vercel edge 写 WebDAV 截断文件，且反复覆盖。**移除 Vercel 项目后写入源消除**（删除文件后 2 分钟不再复现）。
+2. **浏览器 HTTP 缓存**：同步代理响应未设置 `Cache-Control`，浏览器缓存了旧的损坏 `backup.json`（旧 ETag），即使服务端文件已修复仍持续解析失败。
+   - 修复：`/api/webdav`、`/api/upstash` 响应加 `Cache-Control: no-store` + `Pragma: no-cache`；客户端 `fetch` 显式 `cache: "no-store"`。
+3. **多客户端并发读写同一文件**：多设备同时自动同步时，A 写入中 B 读取会读到半截数据。
+   - 修复：webdav/upstash 代理路由内加入**串行 promise 队列**（`enqueueSync`），所有同步请求按到达顺序逐个执行。单实例部署下彻底杜绝并发读写截断；实测 5 路并发 PUT 后文件仍为完整 JSON。
+   - 局限：基于单进程内存队列，仅单实例有效；多实例部署需要分布式锁。
+
 ## 上游同步后的重打流程
 
 1. `git fetch upstream && git merge upstream/main`（或 rebase）。
