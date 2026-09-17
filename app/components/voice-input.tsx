@@ -628,14 +628,22 @@ export function VoiceInputBar({
     }
   }, [engine, stopIflytek, stopWebSpeech, setCancellingState, updateRecording]);
 
-  /** track vertical drag: sliding up beyond the threshold arms the cancel zone */
+  /** track vertical drag: sliding up beyond the threshold arms the cancel
+   *  zone, sliding back below it re-arms the send zone (like WeChat) */
   const updateSlide = useCallback(
     (y: number) => {
-      if (!pressedRef.current || cancellingRef.current) return;
+      if (!pressedRef.current) return;
       const dy = startYRef.current - y;
       if (dy >= SLIDE_CANCEL_THRESHOLD) {
-        setCancellingState(true);
-        console.log("[VoiceInput] slide-to-cancel armed");
+        if (!cancellingRef.current) {
+          setCancellingState(true);
+          console.log("[VoiceInput] slide-to-cancel armed");
+        }
+      } else if (dy <= SLIDE_CANCEL_THRESHOLD / 2) {
+        if (cancellingRef.current) {
+          setCancellingState(false);
+          console.log("[VoiceInput] slide-to-cancel disarmed");
+        }
       }
     },
     [setCancellingState],
