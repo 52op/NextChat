@@ -216,6 +216,34 @@ serverSyncProvider: serverConfig.serverSync.provider,
 6. **`test/iflytek-asr-transcribe.test.ts`（新增）**：用 `jest.unstable_mockModule("ws")` 造假的讯飞服务端，覆盖 4 条路径：收尾宽限返回、缺 sessionId 兜底、硬超时返回已有文本、无结果超时报错。
    - 注意：本仓库测试以**原生 ESM** 运行（`extensionsToTreatAsEsm` + `--experimental-vm-modules`），`jest.mock` 不会被提升，写模块 mock 必须用 `jest.unstable_mockModule` + 动态 `import()`；`jest` 需从 `@jest/globals` 导入。
 
+## 2026-09-17 语音输入空转写排查（交接记录）
+
+**症状**：Android/iOS 真机按住说话 → 松开 →「转写中」→ 数秒后「未识别到内容」。
+
+**已确认正常**（真实测试的证据）：
+
+| 环节 | 证据 |
+|---|---|
+| 真机录音管线 | 诊断全绿：51-63KB `audio/webm;codecs=opus`，解码 3-4s mono 48k，peak 12-19k，rms ~2300-3100，zcr 1900-2500，40-bin 包络为真实词-隙-词语句能量模式 |
+| 讯飞凭据/签名/协议 | 本地直连讯飞 WS `started:true`、`error:false`，正确签名参数与官方一致 |
+| 引擎对语音频段能量 | 本地纯正弦+包络拟真音频 → 讯飞识别出「嗯嗯嗯」`resultCount:3` `final:1`，非空 |
+| 与 Vercel 无关性 | 同上，本地绕过 Vercel 直连成功 |
+
+**未决难点**（分工交接用）：
+
+1. **Vercel 出站 WebSocket 是否真通（最高嫌疑）**。服务端日志 `resultCount:0` 连一条结果都没有，但**未确认 `started` 字段**。判据：查看 Vercel 最新一次 `[Iflytek ASR] ws {...}` 日志的 `started` 值——
+   - `started:false` → 讯飞未确认会话，音频白发，**实锤 Vercel Serverless 出站 WS 被阻** → 换自建代理或转写通道，问题即止。
+   - `started:true` 但 `resultCount:0` → 继续查 flush 竞态（见 3）。
+2. **真实人声从未直接喂过讯飞（方法盲区）**。已测合成音/拟真音均非真实语音。需抓真机原始 pcm 本地重放，分离「传输路径」vs「引擎识别内容」。
+3. **flush 竞态**（`ASR_FLUSH_TIMEOUT_MS` 4000→8000，commit `338588d5`）：发完 end 后讯飞偶尔 8s 级慢才回最终结果，旧 4s 宽限提前 close → `resultCount:0`。已加长，**未在真机验证**。
+
+**已部署的取证改动**（`338588d5` flush 加长；`eae7df91` 空结果 wav 取证）：
+- 空转写时 `/api/iflytek/asr` 把 normalized PCM 包成 16k wav base64 塞回 `wav` 字段。
+- 前端空结果时 console 整串打 `[VoiceInput] empty wav base64 (...): <base64>`，并尝试下载 `asr-empty.wav`（PWA 可能拦截下载，console 是主途径）。
+- 拿到 `<base64>` 后：本地解码 → 直连讯飞重放同一批字节 → 相同空/非空比较即定位「传输」vs「内容」。
+
+**最短定位路径**：外层换调 —— ①Vercel 日志看 `started`；②空转写时从手机 console 抓 `empty wav base64` 串回传。
+
 ## 上游同步后的重打流程
 
 1. `git fetch upstream && git merge upstream/main`（或 rebase）。
