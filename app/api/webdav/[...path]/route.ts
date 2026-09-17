@@ -19,6 +19,24 @@ const normalizeUrl = (url: string) => {
   }
 };
 
+// ---- serialized sync queue ----
+// All sync requests funnel through this single NextChat instance, so we can
+// prevent concurrent read/write races on the shared backup file by running
+// them one after another. A client that writes first is fully visible to the
+// next client before it reads, so concurrent devices merge instead of
+// clobbering each other. (Assumes a single server process.)
+let syncQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueSync<T>(task: () => Promise<T>): Promise<T> {
+  const run = syncQueue.then(task, task);
+  // keep the chain alive even when a task rejects
+  syncQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function handle(
   req: NextRequest,
   { params }: { params: { path: string[] } },
@@ -26,6 +44,10 @@ async function handle(
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
+  return enqueueSync(() => doHandle(req, params));
+}
+
+async function doHandle(req: NextRequest, params: { path: string[] }) {
   const folder = STORAGE_KEY;
   const fileName = `${folder}/backup.json`;
 

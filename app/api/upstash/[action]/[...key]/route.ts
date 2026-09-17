@@ -5,15 +5,36 @@ import { ModelProvider } from "@/app/constant";
 
 const config = getServerSideConfig();
 
+// ---- serialized sync queue ----
+// Same as the webdav route: run sync requests one at a time so concurrent
+// devices cannot corrupt the shared remote state (write fully visible before
+// the next read). Assumes a single server process.
+let syncQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueSync<T>(task: () => Promise<T>): Promise<T> {
+  const run = syncQueue.then(task, task);
+  syncQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function handle(
   req: NextRequest,
   { params }: { params: { action: string; key: string[] } },
 ) {
-  const requestUrl = new URL(req.url);
-
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
+  return enqueueSync(() => doHandle(req, params));
+}
+
+async function doHandle(
+  req: NextRequest,
+  params: { action: string; key: string[] },
+) {
+  const requestUrl = new URL(req.url);
 
   const authResult = auth(req, ModelProvider.GPT);
   if (authResult.error) {
