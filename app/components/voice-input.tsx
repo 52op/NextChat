@@ -473,6 +473,11 @@ export function VoiceInputBar({
       const json = await res.json();
       if (controller.signal.aborted) return;
       if (!res.ok || json.error) {
+        console.log(
+          "[VoiceInput] ASR failed",
+          json.msg ?? "",
+          json.debug ?? "",
+        );
         showToast(json.msg || Locale.VoiceInput.TranscribeError);
         return;
       }

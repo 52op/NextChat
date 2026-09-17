@@ -38,8 +38,9 @@ export async function POST(req: NextRequest) {
   try {
     // Preserve the recorded signal. Amplifying every recording (including
     // background noise) is not a substitute for a valid ASR session.
-    const { text } = await transcribePcm(serverConfig.iflytekAsr, pcm);
-    return NextResponse.json({ text });
+    const { text, wsStat } = await transcribePcm(serverConfig.iflytekAsr, pcm);
+    // always return wsStat so the client can log why a run produced nothing
+    return NextResponse.json({ text, debug: wsStat });
   } catch (error) {
     if (error instanceof IflytekAsrError) {
       return NextResponse.json(
