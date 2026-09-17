@@ -112,6 +112,8 @@ export interface AsrWsStats {
   other: number;
   closeCode?: number;
   failure?: string;
+  /** first few raw messages from the server, for diagnosing silent failures */
+  raw?: string[];
 }
 
 export class IflytekAsrError extends Error {
@@ -148,6 +150,8 @@ export async function transcribePcm(
     };
     const segments = new Map<number, string>();
     const pendingSegments = new Set<number>();
+    // keep the first few raw messages for diagnosing "silent" failures
+    const rawSamples: string[] = [];
     let sessionId: string | undefined;
     let finished = false;
     let sendTimer: ReturnType<typeof setTimeout> | undefined;
@@ -162,6 +166,7 @@ export async function transcribePcm(
       clearTimeout(resultTimer);
       stats.final = segments.size;
       if (message) stats.failure = code;
+      if (rawSamples.length) stats.raw = rawSamples;
       // Log transport metadata only, never audio, signed URLs or transcripts.
       console.log("[Iflytek ASR] ws " + JSON.stringify(stats));
       if (ws.readyState === WebSocket.CONNECTING) ws.terminate();
@@ -219,6 +224,9 @@ export async function transcribePcm(
 
     ws.on("message", (raw) => {
       if (finished) return;
+      if (rawSamples.length < 3) {
+        rawSamples.push(raw.toString().slice(0, 200));
+      }
       try {
         const msg = JSON.parse(raw.toString());
         // The reference describes both an action/data/sid envelope and the
@@ -270,14 +278,11 @@ export async function transcribePcm(
           }
         }
         if (data.ls === true) {
-          if (!stats.sentEnd || pendingSegments.size) {
-            finish(
-              "讯飞提前结束转写，未收到完整结果，请重试",
-              "ASR_INCOMPLETE",
-            );
-          } else {
-            finish();
-          }
+          // ls=true is the engine's authoritative "speech finished" signal.
+          // Some segs' final result is carried by this last frame rather than
+          // as a separate type=0 message, so a leftover pendingSegments entry
+          // must NOT be treated as an incomplete transcription.
+          finish();
         } else if (stats.sentEnd) {
           waitForResults();
         }
