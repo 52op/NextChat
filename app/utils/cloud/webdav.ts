@@ -23,6 +23,7 @@ export function createWebDavClient(
         const res = await fetch(this.path(folder, proxyUrl, "MKCOL"), {
           method: "GET",
           headers: this.headers(),
+          cache: "no-store",
         });
         const success = [201, 200, 404, 405, 301, 302, 307, 308].includes(
           res.status,
@@ -44,6 +45,7 @@ export function createWebDavClient(
       const res = await fetch(this.path(fileName, proxyUrl), {
         method: "GET",
         headers: this.headers(),
+        cache: "no-store",
       });
 
       console.log("[WebDav] get key = ", key, res.status, res.statusText);
@@ -60,6 +62,7 @@ export function createWebDavClient(
         method: "PUT",
         headers: this.headers(),
         body: value,
+        cache: "no-store",
       });
 
       console.log("[WebDav] set key = ", key, res.status, res.statusText);

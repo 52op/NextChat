@@ -26,6 +26,7 @@ export function createUpstashClient(
         const res = await fetch(this.path(`get/${storeKey}`, proxyUrl), {
           method: "GET",
           headers: this.headers(),
+          cache: "no-store",
         });
         console.log("[Upstash] check", res.status, res.statusText);
         return [200].includes(res.status);
@@ -39,6 +40,7 @@ export function createUpstashClient(
       const res = await fetch(this.path(`get/${key}`, proxyUrl), {
         method: "GET",
         headers: this.headers(),
+        cache: "no-store",
       });
 
       console.log("[Upstash] get key = ", key, res.status, res.statusText);
@@ -52,6 +54,7 @@ export function createUpstashClient(
         method: "POST",
         headers: this.headers(),
         body: value,
+        cache: "no-store",
       });
 
       console.log("[Upstash] set key = ", key, res.status, res.statusText);

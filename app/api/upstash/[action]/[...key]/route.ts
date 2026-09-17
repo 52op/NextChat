@@ -86,7 +86,16 @@ async function handle(
     statusText: fetchResult.statusText,
   });
 
-  return fetchResult;
+  // never serve sync data from a browser HTTP cache (see webdav route)
+  const newHeaders = new Headers(fetchResult.headers);
+  newHeaders.set("Cache-Control", "no-store");
+  newHeaders.set("Pragma", "no-cache");
+
+  return new Response(fetchResult.body, {
+    status: fetchResult.status,
+    statusText: fetchResult.statusText,
+    headers: newHeaders,
+  });
 }
 
 export const POST = handle;

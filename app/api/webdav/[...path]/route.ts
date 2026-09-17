@@ -177,7 +177,18 @@ async function handle(
     );
   }
 
-  return fetchResult;
+  // The sync backup must never be served from a browser HTTP cache: a cached
+  // stale/truncated response would be merged into local state silently. Force
+  // no-store on everything we return to the client.
+  const newHeaders = new Headers(fetchResult.headers);
+  newHeaders.set("Cache-Control", "no-store");
+  newHeaders.set("Pragma", "no-cache");
+
+  return new Response(fetchResult.body, {
+    status: fetchResult.status,
+    statusText: fetchResult.statusText,
+    headers: newHeaders,
+  });
 }
 
 export const PUT = handle;
