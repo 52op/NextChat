@@ -122,6 +122,8 @@ const en: LocaleType = {
     Unsupported: "Voice input is not supported in this browser",
     HoldToTalk: "Hold to talk",
     Listening: "Release to finish",
+    SlideToCancel: "Slide up to cancel",
+    ReleaseToCancel: "Release to cancel",
     Processing: "Transcribing…",
     ToggleToVoice: "Switch to voice input",
     ToggleToText: "Switch to text input",

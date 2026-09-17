@@ -72,6 +72,16 @@
     border-color: var(--danger);
   }
 
+  /* slide-up cancel zone: stronger warning color so the user knows releasing
+     here discards the recording (like WeChat) */
+  &.cancelling {
+    color: white;
+    background-color: var(--danger);
+    border-color: white;
+    border-width: 2px;
+    box-shadow: 0 0 0 2px var(--danger);
+  }
+
   &.processing {
     opacity: 0.7;
     cursor: default;

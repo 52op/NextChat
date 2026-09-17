@@ -282,6 +282,7 @@ export function VoiceInputBar({
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const recorderRef = useRef<MediaRecorderRecorder | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -292,6 +293,13 @@ export function VoiceInputBar({
   const pressedRef = useRef(false);
   // whether the recorder has finished arming (async on mobile)
   const armedRef = useRef(false);
+  // slide-up-to-cancel tracking
+  const startYRef = useRef(0);
+  const cancellingRef = useRef(false);
+  const setCancellingState = useCallback((v: boolean) => {
+    cancellingRef.current = v;
+    setCancelling(v);
+  }, []);
 
   const updateRecording = useCallback(
     (v: boolean) => {
@@ -556,26 +564,27 @@ export function VoiceInputBar({
   // hijacking the pointer stream. A timestamp suppresses the synthetic mouse
   // events that browsers fire right after touch.
   const lastTouchTimeRef = useRef(0);
+  // slide up distance (px) that arms the cancel gesture, like WeChat
+  const SLIDE_CANCEL_THRESHOLD = 60;
 
   const startHold = useCallback(() => {
     if (processing || starting || recording) return;
     pressedRef.current = true;
+    setCancellingState(false);
     if (engine === "iflytek") {
       startIflytek();
     } else if (engine === "web-speech") {
       startWebSpeech();
     }
-  }, [engine, processing, starting, recording, startIflytek, startWebSpeech]);
-
-  const endHold = useCallback(() => {
-    if (!pressedRef.current) return;
-    pressedRef.current = false;
-    if (engine === "iflytek") {
-      stopIflytek();
-    } else if (engine === "web-speech") {
-      stopWebSpeech();
-    }
-  }, [engine, stopIflytek, stopWebSpeech]);
+  }, [
+    engine,
+    processing,
+    starting,
+    recording,
+    startIflytek,
+    startWebSpeech,
+    setCancellingState,
+  ]);
 
   const cancelHold = useCallback(() => {
     if (!pressedRef.current) return;
@@ -592,13 +601,63 @@ export function VoiceInputBar({
       setProcessing(false);
     }
   }, [engine, updateRecording]);
+
+  const endHold = useCallback(() => {
+    if (!pressedRef.current) return;
+    pressedRef.current = false;
+    if (cancellingRef.current) {
+      // released in the cancel zone: discard the recording
+      setCancellingState(false);
+      armedRef.current = false;
+      if (engine === "iflytek") {
+        recorderRef.current?.cancel();
+        recorderRef.current = null;
+        setProcessing(false);
+        updateRecording(false);
+      } else if (engine === "web-speech") {
+        recognitionRef.current?.abort?.();
+        updateRecording(false);
+        setProcessing(false);
+      }
+      return;
+    }
+    if (engine === "iflytek") {
+      stopIflytek();
+    } else if (engine === "web-speech") {
+      stopWebSpeech();
+    }
+  }, [engine, stopIflytek, stopWebSpeech, setCancellingState, updateRecording]);
+
+  /** track vertical drag: sliding up beyond the threshold arms the cancel zone */
+  const updateSlide = useCallback(
+    (y: number) => {
+      if (!pressedRef.current || cancellingRef.current) return;
+      const dy = startYRef.current - y;
+      if (dy >= SLIDE_CANCEL_THRESHOLD) {
+        setCancellingState(true);
+        console.log("[VoiceInput] slide-to-cancel armed");
+      }
+    },
+    [setCancellingState],
+  );
+
   const handleTouchStart = useCallback(
     (e: React.TouchEvent) => {
       e.preventDefault();
       lastTouchTimeRef.current = Date.now();
+      startYRef.current = e.touches[0]?.clientY ?? 0;
+      setCancellingState(false);
       startHold();
     },
-    [startHold],
+    [startHold, setCancellingState],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault();
+      updateSlide(e.touches[0]?.clientY ?? 0);
+    },
+    [updateSlide],
   );
 
   const handleTouchEnd = useCallback(
@@ -622,9 +681,11 @@ export function VoiceInputBar({
       // suppress the synthetic mouse events fired after a real touch
       if (Date.now() - lastTouchTimeRef.current < 700) return;
       e.preventDefault();
+      startYRef.current = e.clientY;
+      setCancellingState(false);
       startHold();
     },
-    [startHold],
+    [startHold, setCancellingState],
   );
 
   const handleMouseUp = useCallback(
@@ -634,6 +695,14 @@ export function VoiceInputBar({
       endHold();
     },
     [endHold],
+  );
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (Date.now() - lastTouchTimeRef.current < 700) return;
+      updateSlide(e.clientY);
+    },
+    [updateSlide],
   );
 
   const handleMouseLeave = useCallback(
@@ -664,13 +733,16 @@ export function VoiceInputBar({
           className={clsx(
             styles["hold-to-talk"],
             recording && styles["recording"],
+            cancelling && styles["cancelling"],
             starting && styles["starting"],
             processing && styles["processing"],
           )}
           onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchCancel}
           onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
         >
@@ -686,6 +758,8 @@ export function VoiceInputBar({
           <span className={styles["hold-to-talk-text"]}>
             {processing
               ? Locale.VoiceInput.Processing
+              : cancelling
+              ? Locale.VoiceInput.ReleaseToCancel
               : recording
               ? Locale.VoiceInput.Listening
               : Locale.VoiceInput.HoldToTalk}

@@ -121,6 +121,8 @@ const cn = {
     Unsupported: "当前浏览器不支持语音输入",
     HoldToTalk: "按住 说话",
     Listening: "松开 结束",
+    SlideToCancel: "上滑 取消",
+    ReleaseToCancel: "松开 取消",
     Processing: "转写中…",
     ToggleToVoice: "切换为语音输入",
     ToggleToText: "切换为文字输入",
